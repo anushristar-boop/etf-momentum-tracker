@@ -1,0 +1,11 @@
+symbol,entry_date,entry_price,qty
+# Your CURRENT ETF holdings for the momentum-rotation live tracker.
+#   symbol      = NSE ETF symbol (must be one of the C54 universe, e.g. NIFTYBEES)
+#   entry_date  = date you bought (YYYY-MM-DD) — used to compute the peak-since-entry for the trailing stop
+#   entry_price = your buy price per unit
+#   qty         = units held
+# Starting fresh? Leave just the header line — the report will then simply show
+# the current top-6 to buy. Add one row per ETF as you buy. Lines starting with # are ignored.
+# Example rows (delete these and put your own):
+# NIFTYBEES,2026-06-02,285.40,350
+# MOM100,2026-07-01,62.10,1600
