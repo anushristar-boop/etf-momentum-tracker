@@ -81,9 +81,8 @@ C54 = [
     ("DIVOPPBEES", "Thematic"), ("EVINDIA", "Thematic"), ("INTERNET", "Thematic"), ("MNC", "Thematic"),
     ("SELECTIPO", "Thematic"), ("TOP10ADD", "Thematic"),
     ("LOWVOLIETF", "Factor"), ("NV20IETF", "Factor"), ("QUAL30IETF", "Factor"), ("NIFTYQLITY", "Factor"),
-    ("MONQ50", "Factor"), ("HDFCGROWTH", "Factor"), ("MOM50", "Factor"), ("MOMENTUM50", "Factor"),
+    ("HDFCGROWTH", "Factor"), ("MOM50", "Factor"), ("MOMENTUM50", "Factor"),
     ("MOVALUE", "Factor"),
-    ("MON100", "International"), ("MAFANG", "International"), ("HNGSNGBEES", "International"),
     ("GOLDBEES", "Gold_Silver"), ("SILVERBEES", "Gold_Silver"),
     ("LTGILTBEES", "Bonds"), ("EBBETF0430", "Bonds"), ("GILT5YBEES", "Bonds"),
 ]
@@ -340,7 +339,7 @@ def build_html(hold_df, ranks, buys, meta, path):
     ab = int(ranks["above_dma"].sum()); be = len(ranks) - ab
     f2 = go.Figure(go.Pie(labels=["Above 200-DMA", "Below 200-DMA"], values=[ab, be], hole=0.45,
                           marker=dict(colors=[pos, neg])))
-    f2.update_layout(title="200-DMA gate across the 54 ETFs", **DARK)
+    f2.update_layout(title=f"200-DMA gate across the {len(ranks)} ETFs", **DARK)
     charts += _div(f2)
 
     pnl_txt = f'{meta["pnl"]:+.1f}%' if meta["pnl"] is not None else "-"
@@ -485,7 +484,7 @@ def build_html(hold_df, ranks, buys, meta, path):
             f"<h2>Flagged to sell</h2>{sell_block}"
             f"<h2>Buy candidates (top-6 not held, above 200-DMA)</h2>{buy_block}"
             f"<h2>Charts</h2><div class='chart'>{charts}</div>"
-            f"<h2>Full ranking (54 ETFs)</h2>{tbl}"
+            f"<h2>Full ranking ({len(ranks)} ETFs)</h2>{tbl}"
             f"<h2>Rules</h2>{rules}{note}</div>{sort_js}</body></html>")
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(html)
@@ -500,7 +499,7 @@ def main():
     asof = pd.Timestamp(AS_OF) if AS_OF else None
     print("[1] Loading prices    → ", end="")
     prices, bench = load_prices()
-    print("[2] Ranking universe  → scoring 54 ETFs, 200-DMA gate")
+    print(f"[2] Ranking universe  → scoring {len(C54)} ETFs, 200-DMA gate")
     ranks = compute_ranks(prices, asof)
     print("[3] Reading holdings  → ", end="")
     holdings = read_holdings()
