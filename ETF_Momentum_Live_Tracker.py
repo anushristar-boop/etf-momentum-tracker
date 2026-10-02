@@ -52,7 +52,8 @@ AS_OF           = ""                   # "" = latest; or "YYYY-MM-DD" to check s
 # =============================================================================
 # STRATEGY PARAMETERS (match the backtest exactly)
 # =============================================================================
-N_HOLD      = 6
+N_HOLD      = 6                        # buy only from the top 6 by rank
+HOLD_RANK   = 10                       # but keep a holding until its rank falls past 10 (lower churn)
 LB          = [21, 63, 126, 252]
 WEIGHTS     = [0.15, 0.40, 0.30, 0.15]
 DMA_PERIOD  = 200
@@ -237,24 +238,23 @@ def evaluate(holdings, prices, ranks, asof, regime_on=True):
         trail_level = peak * (1 - TRAIL_PCT)
         rinfo = rank_of.get(sym)
         rk = int(rinfo["rank"]) if rinfo is not None else None
-        in_top6 = bool(rinfo is not None and rinfo["top6"])
         if regime_on is False:
             status, reason = "SELL", f"Regime OFF — {REGIME_LABEL} below its {REGIME_DMA}-DMA (go to cash)"
         elif cur <= sl_level:
             status, reason = "SELL", f"Hard SL — down {(cur/entry-1)*100:.1f}% from entry (limit -{int(SL_PCT*100)}%)"
         elif cur <= trail_level:
             status, reason = "SELL", f"Trail stop — down {(cur/peak-1)*100:.1f}% from peak (limit -{int(TRAIL_PCT*100)}%)"
-        elif not in_top6:
-            status, reason = "SELL", (f"Rotation — rank {rk} (out of top {N_HOLD})" if rk
-                                      else f"Rotation — no longer ranked in top {N_HOLD}")
+        elif rk is None or rk > HOLD_RANK:
+            status, reason = "SELL", (f"Rotation — rank {rk} (fallen past {HOLD_RANK})" if rk
+                                      else f"Rotation — no longer ranked in top {HOLD_RANK}")
         else:
-            status, reason = "HOLD", f"in top {N_HOLD} (rank {rk}), stops intact"
+            status, reason = "HOLD", f"rank {rk} (<= {HOLD_RANK}), stops intact"
         out.append({
             "symbol": sym, "category": CATEGORY.get(sym, ""),
             "entry_date": (h["entry_date"].date().isoformat() if not pd.isna(h["entry_date"]) else "-"),
             "entry_price": entry, "qty": int(h["qty"]), "current": cur, "peak": peak,
             "pnl": (cur / entry - 1) * 100, "value": cur * int(h["qty"]),
-            "rank": rk, "in_top6": in_top6,
+            "rank": rk, "in_top6": (rk is not None and rk <= N_HOLD),
             "sl_level": sl_level, "trail_level": trail_level,
             "sl_cushion": (cur / sl_level - 1) * 100, "trail_cushion": (cur / trail_level - 1) * 100,
             "status": status, "reason": reason,
@@ -276,7 +276,7 @@ def build_excel(hold_df, ranks, buys, meta, path):
         summ = pd.DataFrame({
             "Metric": ["As of", f"Regime ({REGIME_LABEL} vs {REGIME_DMA}-DMA)", "Holdings",
                        "Still on HOLD", "Flagged to SELL", "Portfolio value (₹)", "Total P&L %",
-                       "Buy candidates (top-6 not held, above DMA)", "Generated"],
+                       "Buy candidates (top-6, 3M>0, above DMA, not held)", "Generated"],
             "Value": [meta["as_of"], _reg, meta["n_hold_total"], meta["n_hold"], meta["n_sell"],
                       round(meta["value"]), (round(meta["pnl"], 2) if meta["pnl"] is not None else "-"),
                       meta["n_buy"], meta["generated"]],
@@ -401,8 +401,8 @@ def build_html(hold_df, ranks, buys, meta, path):
             f"(≈₹{meta['slot_size']:,.0f}/slot)</div></div>"
             for r in buys.itertuples(index=False)) + "</div>"
     else:
-        buy_block = ("<div class='empty'>No buy candidates — the top-6 not held are all below their "
-                     "200-DMA, so those slots stay in cash.</div>")
+        buy_block = ("<div class='empty'>No buy candidates — none of the top-6 not held pass the filters "
+                     "(positive 3-month return and above their 200-DMA), so those slots stay in cash.</div>")
 
     # full ranking table
     def cell(v, pct=False):
@@ -468,18 +468,18 @@ def build_html(hold_df, ranks, buys, meta, path):
 
     rules = (f"<div class='rules'><b>Regime gate (checked first):</b> hold or buy ETFs only when {REGIME_LABEL} "
              f"is above its {REGIME_DMA}-day average — otherwise every ETF is sold and you sit 100% in cash. "
-             f"When invested, a holding is <b>kept</b> until one of three exits fires (priority order): "
-             f"<b>Hard SL</b> — price ≤ entry × (1−{int(SL_PCT*100)}%); <b>Trail stop</b> — price ≤ "
-             f"peak-since-entry × (1−{int(TRAIL_PCT*100)}%); <b>Rotation</b> — it drops out of the top "
-             f"{N_HOLD} by momentum score. Momentum score = 0.15·1M + 0.40·3M + 0.30·6M + 0.15·12M returns. "
-             f"New buys come from the top {N_HOLD} not currently held that are above their {DMA_PERIOD}-day "
-             f"average. Peak-since-entry basis: <b>{PEAK_BASIS}</b>.</div>")
+             f"When invested, a holding is <b>kept</b> until one of these exits fires (priority order): "
+             f"<b>Hard SL</b> (real-time) — price ≤ entry × (1−{int(SL_PCT*100)}%); <b>Trail stop</b> "
+             f"(real-time) — price ≤ peak-since-entry × (1−{int(TRAIL_PCT*100)}%); <b>Rotation</b> — its rank "
+             f"falls past {HOLD_RANK} (rank &gt; {HOLD_RANK}). Momentum score = 0.15·1M + 0.40·3M + 0.30·6M + "
+             f"0.15·12M returns. <b>New buys</b> come from the top {N_HOLD} not currently held that are above "
+             f"their {DMA_PERIOD}-day average <b>and have a positive 3-month return</b> (bought at month-end; "
+             f"kept down to rank {HOLD_RANK}). Peak-since-entry basis: <b>{PEAK_BASIS}</b>.</div>")
 
-    note = ("<div class='note'><b>Live monitor.</b> Status uses today's prices; the strategy rebalances at "
-            "each month-start, so a flagged SELL is what you'd act on at the next rebalance (the hard/trail "
-            "stops let you see a breach the moment it happens). Prices are Yahoo Finance auto-adjusted closes. "
-            "Peak-since-entry is computed from price history; if you use a tighter live trailing stop, switch "
-            "PEAK_BASIS. Not investment advice.</div>")
+    note = ("<div class='note'><b>Live monitor.</b> Status uses today's prices. The <b>hard and trailing stops "
+            "are real-time</b> — act on a stop-driven SELL the day it appears; <b>new buys and rotation</b> "
+            "(rank-based) happen at month-start. Prices are Yahoo Finance auto-adjusted closes; peak-since-entry "
+            "is computed from price history (switch PEAK_BASIS for a different trailing basis). Not investment advice.</div>")
 
     ro = meta.get("regime_on")
     rc, rd = meta.get("regime_cur"), meta.get("regime_dma")
@@ -520,7 +520,7 @@ def build_html(hold_df, ranks, buys, meta, path):
             f"{header}{regime_banner}<div class='kpis'>{kpi_html}</div>"
             f"<h2>Still on hold</h2>{hold_block}"
             f"<h2>Flagged to sell</h2>{sell_block}"
-            f"<h2>Buy candidates (top-6 not held, above 200-DMA)</h2>{buy_block}"
+            f"<h2>Buy candidates (top-6, 3M&gt;0, above 200-DMA, not held)</h2>{buy_block}"
             f"<h2>Charts</h2><div class='chart'>{charts}</div>"
             f"<h2>Full ranking ({len(ranks)} ETFs)</h2>{tbl}"
             f"<h2>Rules</h2>{rules}{note}</div>{sort_js}</body></html>")
@@ -559,7 +559,8 @@ def main():
     if regime_on is False:
         buys = ranks.iloc[0:0]   # regime OFF -> no buying, sit in cash
     else:
-        buys = ranks[(ranks["top6"]) & (ranks["above_dma"]) & (~ranks["symbol"].isin(held_syms))]
+        buys = ranks[(ranks["top6"]) & (ranks["above_dma"]) & (ranks["ret_3m"] > 0)
+                     & (~ranks["symbol"].isin(held_syms))]
 
     last_date = max([(p.loc[:asof] if asof is not None else p).index[-1] for p in prices.values() if len(p)])
     n_hold = int((hold_df["status"] == "HOLD").sum()) if len(hold_df) else 0
