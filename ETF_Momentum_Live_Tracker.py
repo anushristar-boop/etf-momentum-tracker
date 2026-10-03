@@ -12,6 +12,9 @@
 # It also lists the current top-6 buy candidates (above their 200-DMA) to rotate
 # freed slots into. Outputs one Excel workbook + one self-contained dark HTML report.
 # (This is the LIVE tracker — not the backtest and not the fresh-start screener.)
+# OPTIONAL: when run with SEND_TT_SIGNALS=1 and a TRADETRON_TOKEN (GitHub secret), it also
+# sends today's ranks + regime to the Tradetron strategy 'Nifty Gold and ETF Momentum 1L'.
+# Without those two settings it behaves exactly as before and sends nothing.
 # =============================================================================
 
 import subprocess, sys
@@ -33,8 +36,10 @@ if hasattr(sys.stdout, "reconfigure"):
 import warnings
 warnings.filterwarnings("ignore")
 
-import os, math, webbrowser
+import os, math, json, time, webbrowser
+import urllib.request, urllib.error
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from pathlib import Path
 
 import numpy as np
@@ -529,6 +534,124 @@ def build_html(hold_df, ranks, buys, meta, path):
 
 
 # =============================================================================
+# TRADETRON SIGNAL SENDER  (optional — only runs when SEND_TT_SIGNALS=1)
+# =============================================================================
+# Sends, for every ETF, one "rank code" to the Tradetron strategy, then the regime,
+# and LAST a month stamp (YYYYMM). Tradetron acts only when the stamp changes, i.e.
+# on the first trading day of a new month that the data arrives, at 3:00-3:20 pm.
+#   rank code 1-99    = rank, and allowed to be bought (3M > 0 AND above its 200-DMA)
+#   rank code 101-199 = rank + 100, NOT allowed to be bought (still used for the rank-10 exit)
+#   rank code 0       = no data for this ETF today -> Tradetron takes no action on it
+#   regime 1 = Nifty 50 above its 200-DMA, 2 = below (sell all, stay in cash)
+# The token is read from the TRADETRON_TOKEN secret. Never type the token in this file.
+TT_WEBHOOK_URL   = "https://api.tradetron.tech/api?"   # the trailing ? is required
+TT_PAIRS_PER_CALL = 3        # variables per call
+TT_PAUSE_SECS     = 2.5      # Tradetron limits: 3 calls/second, 30/minute, 250/hour
+TT_MIN_SCORED     = 40       # safety: do not send if fewer ETFs than this could be ranked
+TT_SESSION        = (920, 1525)   # only send while the market is open (IST, HHMM)
+
+
+def _tt_post(token, pairs):
+    """Send [(variable, value), ...] in one call. Returns True on success."""
+    body = {"auth-token": token}
+    for i, (k, v) in enumerate(pairs):
+        sfx = "" if i == 0 else str(i)
+        body["key" + sfx] = str(k)
+        body["value" + sfx] = str(v)
+    data = json.dumps(body).encode()
+    for attempt in range(1, 4):
+        try:
+            req = urllib.request.Request(
+                TT_WEBHOOK_URL, data=data, method="POST",
+                headers={"Content-Type": "application/json", "User-Agent": "tt-webhook/1.0"})
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                text = resp.read().decode(errors="replace")
+                if resp.status == 200 and '"success":false' not in text.replace(" ", "").lower():
+                    return True
+                print(f"      Tradetron replied {resp.status}: {text[:200]}")
+        except urllib.error.HTTPError as e:
+            print(f"      Tradetron HTTP error {e.code} (attempt {attempt}/3)")
+        except Exception as e:
+            print(f"      Could not reach Tradetron: {type(e).__name__} (attempt {attempt}/3)")
+        time.sleep(6 * attempt)
+    return False
+
+
+def build_tt_pairs(ranks, regime_on):
+    """Rank codes for all ETFs in the universe + the regime flag."""
+    by_sym = {r["symbol"]: r for _, r in ranks.iterrows()}
+    pairs = []
+    for sym, _cat in C54:
+        r = by_sym.get(sym)
+        if r is None:
+            code = 0
+        else:
+            rk = int(r["rank"])
+            can_buy = bool(r["above_dma"]) and float(r["ret_3m"]) > 0
+            code = rk if can_buy else 100 + rk
+        pairs.append((f"{sym}_r", code))
+    pairs.append(("regime", 1 if regime_on else 2))
+    return pairs
+
+
+def send_tradetron_signals(prices, ranks, regime_on):
+    """Returns True (sent), False (tried and failed) or None (skipped on purpose)."""
+    if os.getenv("SEND_TT_SIGNALS") != "1":
+        return None
+    print("[TT] Tradetron signals → ", end="")
+    dry = os.getenv("TT_DRY_RUN") == "1"
+    force = os.getenv("TT_FORCE") == "1"
+    token = os.getenv("TRADETRON_TOKEN", "").strip()
+    if not token and not dry:
+        print("FAILED — the TRADETRON_TOKEN secret is missing")
+        return False
+    if AS_OF:
+        print("skipped — AS_OF is set (a past date), signals are sent only for today")
+        return None
+    now = datetime.now(ZoneInfo("Asia/Kolkata"))
+    hhmm = now.hour * 100 + now.minute
+    last_date = max(p.index[-1] for p in prices.values() if len(p)).date()
+    if not force:
+        if last_date != now.date():
+            print(f"skipped — latest price is {last_date}, not today ({now.date()}): "
+                  f"market holiday or prices not updated yet")
+            return None
+        if not (TT_SESSION[0] <= hhmm <= TT_SESSION[1]):
+            print(f"skipped — market is closed (time now {now:%H:%M} IST)")
+            return None
+    if regime_on is None:
+        print("FAILED — could not work out the Nifty 50 regime (no index data)")
+        return False
+    if len(ranks) < TT_MIN_SCORED:
+        print(f"FAILED — only {len(ranks)} ETFs could be ranked (need {TT_MIN_SCORED}); data problem")
+        return False
+
+    pairs = build_tt_pairs(ranks, regime_on)
+    stamp = now.year * 100 + now.month
+    n_buyable = sum(1 for k, v in pairs if k.endswith("_r") and 1 <= v <= N_HOLD)
+    print(f"{len(pairs) - 1} rank codes, regime {'ON' if regime_on else 'OFF'}, "
+          f"stamp {stamp}, top-{N_HOLD} buyable now: {n_buyable}")
+    if dry:
+        for k, v in pairs:
+            print(f"      {k} = {v}")
+        print(f"      reb = {stamp}   (dry run — nothing sent)")
+        return None
+    calls = [pairs[i:i + TT_PAIRS_PER_CALL] for i in range(0, len(pairs), TT_PAIRS_PER_CALL)]
+    for n, chunk in enumerate(calls, 1):
+        if not _tt_post(token, chunk):
+            print(f"      FAILED at call {n}/{len(calls)} — month stamp NOT sent, "
+                  f"so Tradetron will not act on a half-delivered ranking")
+            return False
+        time.sleep(TT_PAUSE_SECS)
+    # The stamp goes last and alone: Tradetron only acts once every rank has arrived.
+    if not _tt_post(token, [("reb", stamp)]):
+        print("      FAILED sending the month stamp — Tradetron will not act today")
+        return False
+    print(f"      sent ✓ ({len(calls) + 1} calls)")
+    return True
+
+
+# =============================================================================
 # MAIN
 # =============================================================================
 def main():
@@ -548,6 +671,8 @@ def main():
         regime_on = r_cur > r_dma
     print(f"[3] Regime check      → {REGIME_LABEL} vs {REGIME_DMA}-DMA: "
           f"{'ON (invested)' if regime_on else ('OFF (all cash)' if regime_on is False else 'unknown')}")
+
+    tt_result = send_tradetron_signals(prices, ranks, regime_on)
 
     print("[4] Reading holdings  → ", end="")
     holdings = read_holdings()
@@ -588,6 +713,9 @@ def main():
     except Exception:
         print("no browser (headless) — open the HTML from the output folder")
     print(f"\nSaved: {EXCEL_PATH}\nSaved: {HTML_PATH}")
+    if tt_result is False:
+        print("\nTradetron signals were NOT delivered — see the [TT] lines above.")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
