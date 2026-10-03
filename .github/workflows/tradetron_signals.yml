@@ -1,0 +1,32 @@
+# Sends the ETF ranks + Nifty regime to the Tradetron strategy
+# "Nifty Gold and ETF Momentum 1L" every trading day, before 3 pm.
+# Tradetron itself decides when to trade (first trading day of a new month, 3:00-3:20 pm).
+name: Tradetron ETF signals
+
+on:
+  schedule:
+    - cron: "53 8 * * 1-5"      # 2:23 pm IST, Monday to Friday
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Send even if today's prices are missing or the market is closed"
+        type: boolean
+        default: false
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install packages
+        run: pip install yfinance pandas numpy openpyxl plotly
+      - name: Rank ETFs and send signals to Tradetron
+        env:
+          SEND_TT_SIGNALS: "1"
+          TRADETRON_TOKEN: ${{ secrets.TRADETRON_TOKEN }}
+          TT_FORCE: ${{ inputs.force && '1' || '0' }}
+        run: python ETF_Momentum_Live_Tracker.py
