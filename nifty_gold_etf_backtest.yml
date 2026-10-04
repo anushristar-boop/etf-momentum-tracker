@@ -1,0 +1,52 @@
+# Backtest of the combined strategy "Nifty Gold and ETF Momentum 1L".
+# Runs only when you press "Run workflow". The Excel + HTML report are attached
+# to the finished run as a downloadable file called "Combined_Backtest_Output".
+name: NiftyGold + ETF Momentum backtest
+
+on:
+  workflow_dispatch:
+    inputs:
+      start_date:
+        description: "Start date (YYYY-MM-DD)"
+        default: "2015-01-01"
+      end_date:
+        description: "End date (YYYY-MM-DD). Leave blank for the latest data"
+        default: ""
+      capital:
+        description: "Starting capital in rupees"
+        default: "100000"
+      stop_basis:
+        description: "Check stops on the day's close, or on the day's low (stricter)"
+        type: choice
+        options:
+          - close
+          - low
+        default: close
+      cost_pct:
+        description: "Cost per buy and per sell, as % of trade value (charges + slippage)"
+        default: "0.10"
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install packages
+        run: pip install yfinance pandas numpy openpyxl plotly
+      - name: Run the backtest
+        env:
+          BT_START: ${{ inputs.start_date }}
+          BT_END: ${{ inputs.end_date }}
+          BT_CAPITAL: ${{ inputs.capital }}
+          BT_STOP_BASIS: ${{ inputs.stop_basis }}
+          BT_COST_PCT: ${{ inputs.cost_pct }}
+        run: python NiftyGold_ETF_Momentum_Backtest.py
+      - name: Attach the report
+        uses: actions/upload-artifact@v4
+        with:
+          name: Combined_Backtest_Output
+          path: Combined_Backtest_Output/
