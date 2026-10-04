@@ -78,7 +78,9 @@ TRAIL_PCT   = 0.20
 STALE_DAYS  = 10          # an ETF with no price for this many days is not ranked / bought
 REGIME_INDEX, REGIME_LABEL, REGIME_DMA = "^NSEI", "Nifty 50", 200
 BENCH, BENCH_LABEL = "^CRSLDX", "Nifty 500"
-JUMP_FLAG   = 0.35        # a one-day move bigger than this is flagged as a possible data error
+JUMP_FLAG   = 0.35        # a one-day move bigger than this cannot be real for an ETF (20% price band)
+GLITCH_MAX_DAYS = 10      # a wrong-price patch that returns to normal within this many days is repaired
+SPLIT_FACTORS   = [2, 2.5, 4, 5, 10, 20, 25, 50, 100, 1000]
 
 UNIVERSE = [
     ("NIFTYBEES", "Broad_Equity"), ("JUNIORBEES", "Broad_Equity"), ("MID150BEES", "Broad_Equity"),
@@ -175,27 +177,98 @@ def _mock_data():
         data[s] = pd.DataFrame({"Open": close * (1 + rng.normal(0, 0.003, n)),
                                 "High": close * (1 + spread), "Low": close * (1 - spread),
                                 "Close": close}, index=idx[start:])
+    if os.getenv("BT_MOCK_GLITCH") == "1":      # reproduce the Dec-2019 Yahoo errors + one missed split
+        for s_, k in (("NIFTYBEES", 10), ("GOLDBEES", 100), ("BANKBEES", 10)):
+            data[s_].iloc[-1700:-1698] = data[s_].iloc[-1700:-1698].values / k
+        data["ITBEES"].iloc[:-900] = data["ITBEES"].iloc[:-900].values * 10
     reg = pd.Series(8000 * np.exp(np.cumsum(mkt)), index=idx)
     ben = pd.Series(7000 * np.exp(np.cumsum(mkt + rng.normal(0, 0.002, len(idx)))), index=idx)
     print(f"[MOCK] generated {len(data)} ETFs + regime index + benchmark (synthetic, not real results)")
     return data, reg, ben, []
 
 
-def data_checks(data, missing):
+def _snap(f):
+    """Snap a price ratio to the nearest usual split factor (or its inverse) when it is within ~12%."""
+    inv = f < 1
+    g = 1 / f if inv else f
+    best = min(SPLIT_FACTORS, key=lambda k: abs(math.log(g / k)))
+    if abs(math.log(g / best)) < 0.12:
+        g = float(best)
+    return 1 / g if inv else g
+
+
+def repair_prices(df):
+    """Fix Yahoo split errors in one ETF's history. Returns (repaired df, notes, needs_review).
+    Two cases, both recognised by a one-day move no real ETF can make (beyond JUMP_FLAG):
+      1. A short patch of wrong prices that snaps back (e.g. two days shown at 1/10th or 1/100th
+         around a unit split): that patch is scaled back onto the surrounding level.
+      2. A jump that never comes back (a split Yahoo did not adjust for): all earlier prices are
+         rescaled so the series is continuous. This case is marked for a manual look."""
+    df = df.copy()
+    cols = [df.columns.get_loc(c) for c in ["Open", "High", "Low", "Close"]]
+    c = df["Close"].values.astype(float).copy()
+    hi, lo = 1 + JUMP_FLAG, 1 / (1 + JUMP_FLAG)
+    notes, review, t, guard = [], False, 1, 0
+    while t < len(c) and guard < 40:
+        r = c[t] / c[t - 1]
+        if lo <= r <= hi:
+            t += 1
+            continue
+        guard += 1
+        base, t2 = c[t - 1], None
+        for j in range(t + 1, min(t + 1 + GLITCH_MAX_DAYS, len(c))):
+            if lo <= c[j] / base <= hi:
+                t2 = j
+                break
+        if t2 is not None:
+            f = _snap(base / float(np.median(c[t:t2])))
+            df.iloc[t:t2, cols] = df.iloc[t:t2, cols].values * f
+            c[t:t2] *= f
+            notes.append(f"{df.index[t].date()} to {df.index[t2 - 1].date()}: {t2 - t} day(s) of wrong prices multiplied by {f:g}")
+            t = t2
+        else:
+            f = _snap(c[t] / base)
+            df.iloc[:t, cols] = df.iloc[:t, cols].values * f
+            c[:t] *= f
+            notes.append(f"{df.index[t].date()}: jump that never reverted, all earlier prices multiplied by {f:g}")
+            review = True
+            t += 1
+    return df, notes, review
+
+
+def repair_all(data):
+    out, repairs = {}, {}
+    for s, df in data.items():
+        out[s], notes, review = repair_prices(df)
+        if notes:
+            repairs[s] = {"notes": notes, "review": review}
+    return out, repairs
+
+
+def data_checks(data, missing, repairs):
     rows = []
     for s, _ in UNIVERSE:
         if s in missing or s not in data:
-            rows.append({"symbol": s, "first_date": "-", "last_date": "-", "rows": 0,
-                         "big_jumps": 0, "jump_dates": "", "flag": "NO DATA"})
+            rows.append({"symbol": s, "first_date": "-", "last_date": "-", "rows": 0, "repairs_made": "",
+                         "big_jumps_left": 0, "jump_dates": "", "flag": "NO DATA"})
             continue
         c = data[s]["Close"]
-        ret = c.pct_change().abs()
-        jumps = ret[ret > JUMP_FLAG]
+        r = c / c.shift(1)
+        jumps = r[(r > 1 + JUMP_FLAG) | (r < 1 / (1 + JUMP_FLAG))]
+        rep = repairs.get(s)
+        if len(jumps):
+            flag = "CHECK — big one-day moves remain"
+        elif rep and rep["review"]:
+            flag = "CHECK — earlier history rescaled, verify"
+        elif rep:
+            flag = "REPAIRED — wrong prices corrected"
+        else:
+            flag = "ok"
         rows.append({"symbol": s, "first_date": c.index[0].date().isoformat(),
                      "last_date": c.index[-1].date().isoformat(), "rows": len(c),
-                     "big_jumps": len(jumps),
-                     "jump_dates": ", ".join(d.date().isoformat() for d in jumps.index[:6]),
-                     "flag": ("CHECK — possible split/bad price" if len(jumps) else "ok")})
+                     "repairs_made": " | ".join(rep["notes"]) if rep else "",
+                     "big_jumps_left": len(jumps),
+                     "jump_dates": ", ".join(d.date().isoformat() for d in jumps.index[:6]), "flag": flag})
     return pd.DataFrame(rows)
 
 
@@ -557,9 +630,10 @@ def build_excel(eq, tr, open_pos, ng_log, monthly, recon, checks, summary_rows, 
     ws = sheet("Data_Checks", checks)
     fcol = list(checks.columns).index("flag") + 1
     for r in range(2, ws.max_row + 1):
-        if ws.cell(r, fcol).value != "ok":
+        v = str(ws.cell(r, fcol).value)
+        if v != "ok":
             for c in range(1, len(checks.columns) + 1):
-                ws.cell(r, c).fill = amber
+                ws.cell(r, c).fill = amber if v.startswith("REPAIRED") else red
     sheet("Assumptions", pd.DataFrame({"Assumptions and limits — read before trusting the numbers": assumptions}))
     wb.save(path)
 
@@ -707,12 +781,18 @@ def build_html(eq, tr, open_pos, ng_log, st, yearly, mret, checks, assumptions, 
     else:
         trade_line = "No closed trades in this period."
 
-    bad = checks[checks["flag"] != "ok"]
+    bad = checks[checks["flag"].str.startswith("CHECK") | (checks["flag"] == "NO DATA")]
+    fixed = checks[checks["flag"].str.startswith("REPAIRED")]
     warn = ""
     if len(bad):
-        warn = ("<div class='regime off'><b>Data warnings on " + str(len(bad)) + " ETF(s)</b> · "
-                + "; ".join(f"{r.symbol}: {r.flag}" + (f" ({r.jump_dates})" if r.jump_dates else "") for r in bad.itertuples())
-                + "<span class='sm'>A flagged ETF can distort ranks, stops and returns. See the Data_Checks sheet.</span></div>")
+        warn += ("<div class='regime off'><b>Data warnings on " + str(len(bad)) + " ETF(s)</b> · "
+                 + "; ".join(f"{r.symbol}: {r.flag}" + (f" ({r.jump_dates})" if r.jump_dates else "")
+                             + (f" [{r.repairs_made}]" if r.repairs_made else "") for r in bad.itertuples())
+                 + "<span class='sm'>A flagged ETF can distort ranks, stops and returns. See the Data_Checks sheet.</span></div>")
+    if len(fixed):
+        warn += ("<div class='regime fix'><b>Wrong Yahoo prices repaired on " + str(len(fixed)) + " ETF(s)</b> · "
+                 + "; ".join(f"{r.symbol}: {r.repairs_made}" for r in fixed.itertuples())
+                 + "<span class='sm'>These were split errors in the data, not real price moves. Details in the Data_Checks sheet.</span></div>")
     if meta.get("mock"):
         warn = "<div class='regime off'><b>MOCK DATA</b> · synthetic prices, for testing the script only. These are not real results.</div>" + warn
 
@@ -740,6 +820,7 @@ def build_html(eq, tr, open_pos, ng_log, st, yearly, mret, checks, assumptions, 
     .chart{background:var(--panel);border:1px solid var(--line);border-radius:12px;margin:12px 0;padding:6px}
     .regime{border-radius:12px;padding:13px 16px;margin:14px 0 6px;font-size:13px;border:1px solid var(--line);background:var(--panel);line-height:1.5}
     .regime .sm{display:block;font-size:11px;color:var(--fg2);margin-top:5px}
+    .regime.fix{border-color:rgba(245,165,36,.5);background:linear-gradient(160deg,rgba(245,165,36,.12),rgba(245,165,36,.03))}.regime.fix b{color:var(--acc)}
     .regime.off{border-color:rgba(229,89,94,.55);background:linear-gradient(160deg,rgba(229,89,94,.16),rgba(229,89,94,.03))}.regime.off b{color:var(--neg)}
     """
     sort_js = """
@@ -790,9 +871,15 @@ def main():
             raise SystemExit(f"No price data for {need} — cannot run the backtest.")
     if regime is None or len(regime) < REGIME_DMA + 30:
         raise SystemExit(f"No usable {REGIME_LABEL} data — cannot run the backtest.")
-    checks = data_checks(data, missing)
-    n_bad = int((checks["flag"] != "ok").sum())
-    print(f"[2] Data checks       → {n_bad} ETF(s) flagged" + (" — see Data_Checks sheet" if n_bad else ""))
+    data, repairs = repair_all(data)
+    checks = data_checks(data, missing, repairs)
+    n_rep = int(checks["flag"].str.startswith("REPAIRED").sum())
+    n_bad = int((checks["flag"].str.startswith("CHECK") | (checks["flag"] == "NO DATA")).sum())
+    print(f"[2] Data checks       → {n_rep} ETF(s) had wrong prices repaired, {n_bad} need a look"
+          + (" — see Data_Checks sheet" if (n_rep or n_bad) else ""))
+    for sym, rep in repairs.items():
+        for note in rep["notes"]:
+            print(f"      {sym}: {note}")
 
     print("[3] Running backtest  → ", end="")
     eq, tr, open_pos, ng_log, monthly, recon, state = run_backtest(data, regime, bench)
@@ -842,8 +929,9 @@ def main():
         f"<b>Survivorship.</b> The universe is today's list of 50 ETFs. Only {first_rank} of them had enough history to be "
         f"ranked at the start, rising to {last_rank} at the end, so the early years test a much narrower strategy than the one you will trade.",
         "<b>Prices.</b> Yahoo Finance daily data, adjusted for splits and dividends. Yahoo data for thinly traded ETFs can contain "
-        "wrong prices; the Data_Checks sheet flags any one-day move above "
-        f"{JUMP_FLAG*100:.0f}%. A flagged ETF can distort the result.",
+        "wrong prices, especially around unit splits. Any one-day move above "
+        f"{JUMP_FLAG*100:.0f}% is treated as a data error and repaired; every repair is listed in the Data_Checks sheet. "
+        "Smaller errors would not be caught.",
         f"<b>Stops.</b> Checked once a day on the daily {STOP_BASIS}. "
         + ("Live, Tradetron checks every tick, so live stops can trigger on intraday dips that a close-based test never sees. "
            "Re-run with stop basis 'low' to see the stricter version."
@@ -882,7 +970,7 @@ def main():
                      ("Momentum trades closed", len(tr)), ("Gold reshuffles", max(len(ng_log) - 1, 0)),
                      ("Total costs paid — Part A (Rs)", round(state["ng"]["costs"], 2)),
                      ("Total costs paid — Part B closed trades (Rs)", round(state["mom_costs"], 2)),
-                     ("ETFs flagged in Data_Checks", n_bad), ("Generated", datetime.now().strftime("%d %b %Y %H:%M"))]:
+                     ("ETFs with wrong prices repaired", n_rep), ("ETFs needing a manual look", n_bad), ("Generated", datetime.now().strftime("%d %b %Y %H:%M"))]:
         summary_rows.append({"Measure": lab, "Combined": val})
 
     meta = {"start": eq.index[0].strftime("%d %b %Y"), "end": eq.index[-1].strftime("%d %b %Y"),
