@@ -9,7 +9,8 @@
 #                   Buys on day 1; reshuffles only when the ratio has moved 1.0 from the
 #                   ratio at the last purchase / reshuffle. Only the difference is traded.
 #     Part B (49%)  ETF momentum rotation on 50 ETFs. Monthly (first trading day):
-#                   Nifty 50 <= its 200-DMA -> sell all, stay in cash. Otherwise sell
+#                   Nifty 50 <= its 200-DMA -> sell all ETFs and put all Part B money in
+#                   GOLDBEES (or stay in cash, if chosen) until the regime is on again. Otherwise sell
 #                   holdings ranked below 10, buy top-6 names that have 3M > 0 and are
 #                   above their own 200-DMA, 1/6 of Part B value each, whole units.
 #                   Hard stop -15% from entry and trailing stop -20% from peak, checked daily.
@@ -56,6 +57,9 @@ STOP_BASIS = (os.getenv("BT_STOP_BASIS", "").strip() or "close").lower()   # "cl
 COST_PCT   = float(os.getenv("BT_COST_PCT", "").strip() or 0.10)  # % of trade value, each side
                                                                  # (charges + slippage together)
 DP_CHARGE      = 15.34    # Rs per sell transaction (depository charge); 0 to ignore
+REGIME_OFF_ASSET = (os.getenv("BT_REGIME_OFF", "").strip() or "goldbees").lower()   # "goldbees" or "cash"
+PARK_SYMBOL    = "GOLDBEES"   # where Part B's money goes while the regime is off
+PARK_STOPS     = False    # True = the -15% / -20% stops also apply to that regime-off GOLDBEES holding
 CASH_YIELD_PA  = 0.0      # idle cash earns nothing in a broker account; e.g. 0.05 for a liquid fund
 RF_PA          = 0.06     # risk-free rate used in the Sharpe ratio
 
@@ -335,10 +339,11 @@ def run_backtest(data, regime, bench):
     # ---- Part B state ----
     mom = {"cash": mom_cap, "yield": 0.0}
     hold, trades, monthly = {}, [], []
+    park = {}                 # the regime-off GOLDBEES holding (kept apart from the 6 momentum slots)
     regime_on_last = None
 
     rec = {k: [] for k in ["ng_value", "mom_value", "reserve", "total", "ratio", "gold_w",
-                           "gold_w_actual", "n_hold", "regime", "rankable"]}
+                           "gold_w_actual", "n_hold", "park", "regime", "rankable"]}
     rankable_last = 0
     prev_d = None
 
@@ -394,44 +399,56 @@ def run_backtest(data, regime, bench):
         # ================= Part B: ETF momentum =================
         sold_today = set()
 
-        def sell(s, price, reason):
-            h = hold.pop(s)
+        def sell(s, price, reason, book=None):
+            book = hold if book is None else book
+            h = book.pop(s)
             gross = h["qty"] * price
             c = gross * cp + DP_CHARGE
             mom["cash"] += gross - c
             net = h["qty"] * (price - h["entry"]) - h["cost_in"] - c
-            trades.append({"symbol": s, "category": CATEGORY.get(s, ""), "entry_date": h["date"].date().isoformat(),
+            trades.append({"symbol": s, "category": ("Regime-off holding" if book is park else CATEGORY.get(s, "")),
+                           "entry_date": h["date"].date().isoformat(),
                            "entry_price": h["entry"], "qty": h["qty"], "exit_date": d.date().isoformat(),
                            "exit_price": price, "reason": reason, "rank_at_entry": h["rank"],
                            "days_held": (d - h["date"]).days,
                            "gross_pnl": h["qty"] * (price - h["entry"]), "costs": h["cost_in"] + c,
                            "net_pnl": net, "net_pnl_pct": net / (h["qty"] * h["entry"]) * 100})
-            sold_today.add(s)
+            if book is hold:
+                sold_today.add(s)
+
+        def positions_value():
+            return (sum(h["qty"] * Cn[s][i] for s, h in hold.items())
+                    + sum(h["qty"] * Cn[s][i] for s, h in park.items()))
 
         # -- daily stops (the live strategy checks these on every tick) --
-        for s in list(hold):
-            h = hold[s]
-            if h["date"] == d:
-                continue
-            sl_level = h["entry"] * (1 - SL_PCT)
-            if STOP_BASIS == "low":
-                lo, op, hi = Ln[s][i], On[s][i], Hn[s][i]
-                if np.isnan(lo):
+        park_stopped = False
+        for book in ((hold, park) if PARK_STOPS else (hold,)):
+            for s in list(book):
+                h = book[s]
+                if h["date"] == d:
                     continue
-                tr_level = h["peak"] * (1 - TRAIL_PCT)
-                level = max(sl_level, tr_level)
-                if lo <= level:
-                    fill = level if (np.isnan(op) or op >= level) else op     # gap-down fills at the open
-                    sell(s, float(fill), "Hard stop" if sl_level >= tr_level else "Trailing stop")
-                elif not np.isnan(hi):
-                    h["peak"] = max(h["peak"], hi)
-            else:
-                p = Cn[s][i]
-                h["peak"] = max(h["peak"], p)
-                if p <= sl_level:
-                    sell(s, float(p), "Hard stop")
-                elif p <= h["peak"] * (1 - TRAIL_PCT):
-                    sell(s, float(p), "Trailing stop")
+                n_before = len(trades)
+                sl_level = h["entry"] * (1 - SL_PCT)
+                if STOP_BASIS == "low":
+                    lo, op, hi = Ln[s][i], On[s][i], Hn[s][i]
+                    if np.isnan(lo):
+                        continue
+                    tr_level = h["peak"] * (1 - TRAIL_PCT)
+                    level = max(sl_level, tr_level)
+                    if lo <= level:
+                        fill = level if (np.isnan(op) or op >= level) else op     # gap-down fills at the open
+                        sell(s, float(fill), "Hard stop" if sl_level >= tr_level else "Trailing stop", book)
+                    elif not np.isnan(hi):
+                        h["peak"] = max(h["peak"], hi)
+                else:
+                    p = Cn[s][i]
+                    h["peak"] = max(h["peak"], p)
+                    if p <= sl_level:
+                        sell(s, float(p), "Hard stop", book)
+                    elif p <= h["peak"] * (1 - TRAIL_PCT):
+                        sell(s, float(p), "Trailing stop", book)
+                if book is park and len(trades) > n_before:
+                    park_stopped = True
 
         # -- monthly rebalance: first trading day of a month (and the first backtest day) --
         if prev_d is None or d.month != prev_d.month:
@@ -444,12 +461,22 @@ def run_backtest(data, regime, bench):
             if not regime_on:
                 for s in list(hold):
                     sell(s, float(Cn[s][i]), "Regime off"); sells.append(f"{s} (regime)")
+                if REGIME_OFF_ASSET == "goldbees" and not park and not park_stopped:
+                    p = float(Cn[PARK_SYMBOL][i])
+                    qty = int(mom["cash"] / (p * (1 + cp)))
+                    if qty > 0:
+                        c = qty * p * cp
+                        mom["cash"] -= qty * p + c
+                        park[PARK_SYMBOL] = {"qty": qty, "entry": p, "date": d, "peak": p, "cost_in": c, "rank": None}
+                        buys.append(f"{PARK_SYMBOL} (all money, regime off)")
             else:
+                for s in list(park):
+                    sell(s, float(Cn[s][i]), "Regime on", park); sells.append(f"{s} (regime-off holding)")
                 for s in list(hold):
                     r = rk.get(s)
                     if r is not None and r["rank"] > HOLD_RANK:
                         sell(s, float(Cn[s][i]), f"Rotation (rank {r['rank']})"); sells.append(f"{s} (rank {r['rank']})")
-                value = mom["cash"] + sum(h["qty"] * Cn[s][i] for s, h in hold.items())
+                value = mom["cash"] + positions_value()
                 slot = value / N_HOLD
                 cands = sorted((r["rank"], s) for s, r in rk.items()
                                if r["rank"] <= N_HOLD and r["elig"] and s not in hold and s not in sold_today)
@@ -470,15 +497,16 @@ def run_backtest(data, regime, bench):
                             "top6 (* = passes 3M>0 and 200-DMA)": ", ".join(f"{s}{'*' if e else ''}" for _, s, e in top6),
                             "sold": ", ".join(sells), "bought": ", ".join(buys),
                             "holdings_after": ", ".join(sorted(hold)), "n_holdings": len(hold),
+                            "regime_off_holding": ", ".join(f"{s} x {h['qty']}" for s, h in park.items()),
                             "cash_after": mom["cash"],
-                            "part_b_value": mom["cash"] + sum(h["qty"] * Cn[s][i] for s, h in hold.items())})
+                            "part_b_value": mom["cash"] + positions_value()})
 
-        mom_value = mom["cash"] + sum(h["qty"] * Cn[s][i] for s, h in hold.items())
+        mom_value = mom["cash"] + positions_value()
         rec["ng_value"].append(ng_value); rec["mom_value"].append(mom_value); rec["reserve"].append(reserve)
         rec["total"].append(ng_value + mom_value + reserve)
         rec["ratio"].append(ratio); rec["gold_w"].append(w * 100)
         rec["gold_w_actual"].append(ng["g"] * pg / ng_value * 100 if ng_value else 0)
-        rec["n_hold"].append(len(hold)); rec["regime"].append(1 if regime_on_last else 0)
+        rec["n_hold"].append(len(hold)); rec["park"].append(1 if park else 0); rec["regime"].append(1 if regime_on_last else 0)
         rec["rankable"].append(rankable_last)
         prev_d = d
 
@@ -492,11 +520,13 @@ def run_backtest(data, regime, bench):
     eq["niftybees_bh"] = C[NG_NIFTY] / C[NG_NIFTY].iloc[0] * CAPITAL
 
     open_pos = pd.DataFrame([{
-        "symbol": s, "category": CATEGORY.get(s, ""), "entry_date": h["date"].date().isoformat(),
+        "symbol": s, "category": ("Regime-off holding" if book is park else CATEGORY.get(s, "")),
+        "entry_date": h["date"].date().isoformat(),
         "entry_price": h["entry"], "qty": h["qty"], "last_price": float(Cn[s][last_i]),
         "peak": h["peak"], "value": h["qty"] * float(Cn[s][last_i]),
         "unrealised_net": h["qty"] * (float(Cn[s][last_i]) - h["entry"]) - h["cost_in"],
-        "pnl_pct": (float(Cn[s][last_i]) / h["entry"] - 1) * 100} for s, h in hold.items()])
+        "pnl_pct": (float(Cn[s][last_i]) / h["entry"] - 1) * 100}
+        for book in (hold, park) for s, h in book.items()])
 
     # ---- reconciliation: rebuild each part's end value from its trade records ----
     tr = pd.DataFrame(trades)
@@ -713,6 +743,9 @@ def build_html(eq, tr, open_pos, ng_log, st, yearly, mret, checks, assumptions, 
     charts.append(_div(f))
 
     f = go.Figure()
+    if eq["park"].any():
+        f.add_trace(go.Scatter(x=eq.index, y=eq["park"] * 6.5, name="Regime off: all Part B money in GOLDBEES", fill="tozeroy",
+                               mode="none", fillcolor="rgba(245,165,36,.22)", line=dict(shape="hv")))
     f.add_trace(go.Scatter(x=eq.index, y=eq["n_hold"], name="ETFs held (max 6)", line=dict(color=blu, width=1.3, shape="hv")))
     f.add_trace(go.Scatter(x=eq.index, y=eq["rankable"], name="ETFs with enough history to rank", yaxis="y2",
                            line=dict(color=mut, width=1.2, dash="dot", shape="hv")))
@@ -764,9 +797,9 @@ def build_html(eq, tr, open_pos, ng_log, st, yearly, mret, checks, assumptions, 
         return f"<div class='tw' style='max-height:460px;overflow-y:auto'><table id='{tid}' class='sortable'><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>"
 
     trade_tbl = tbl(tr.iloc[::-1] if len(tr) else tr,
-                    ["symbol", "entry_date", "entry_price", "qty", "exit_date", "exit_price", "reason",
+                    ["symbol", "category", "entry_date", "entry_price", "qty", "exit_date", "exit_price", "reason",
                      "days_held", "net_pnl", "net_pnl_pct"], "t1", pct_cols=("net_pnl_pct",), money_cols=("net_pnl",))
-    open_tbl = tbl(open_pos, ["symbol", "entry_date", "entry_price", "qty", "last_price", "value", "pnl_pct"], "t2",
+    open_tbl = tbl(open_pos, ["symbol", "category", "entry_date", "entry_price", "qty", "last_price", "value", "pnl_pct"], "t2",
                    pct_cols=("pnl_pct",))
     ng_tbl = tbl(ng_log, ["date", "event", "ratio", "gold_weight_target_pct", "niftybees_units_after",
                           "goldbees_units_after", "value_traded", "costs", "part_value_after"], "t3")
@@ -836,6 +869,7 @@ def build_html(eq, tr, open_pos, ng_log, st, yearly, mret, checks, assumptions, 
     header = (f"<h1>Nifty:Gold Ratio + ETF Momentum — Combined Backtest</h1>"
               f"<div class='sub'>{meta['start']} to {meta['end']} · {c['years']:.1f} years · start capital ₹{CAPITAL:,.0f} "
               f"({NG_SHARE*100:.0f}% Nifty:Gold, {MOM_SHARE*100:.0f}% ETF momentum, {CASH_SHARE*100:.0f}% cash) · "
+              f"regime off → <b>{'all Part B money in GOLDBEES' if REGIME_OFF_ASSET == 'goldbees' else 'cash'}</b> · "
               f"stops checked on the daily <b>{STOP_BASIS}</b> · costs {COST_PCT:.2f}% each side + ₹{DP_CHARGE:.2f} per sell · "
               f"generated {meta['generated']}</div>")
     html = ("<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'>"
@@ -864,6 +898,8 @@ def main():
     print("-" * 52)
     if STOP_BASIS not in ("close", "low"):
         raise SystemExit("BT_STOP_BASIS must be 'close' or 'low'.")
+    if REGIME_OFF_ASSET not in ("goldbees", "cash"):
+        raise SystemExit("BT_REGIME_OFF must be 'goldbees' or 'cash'.")
     print("[1] Loading prices    → ", end="")
     data, regime, bench, missing = load_data()
     for need in (NG_NIFTY, NG_GOLD):
@@ -923,7 +959,8 @@ def main():
     mtable.columns = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
     mtable.insert(0, "year", mtable.index)
 
-    in_cash = float((eq["n_hold"] == 0).mean() * 100)
+    in_cash = float(((eq["n_hold"] == 0) & (eq["park"] == 0)).mean() * 100)
+    in_gold = float((eq["park"] == 1).mean() * 100)
     first_rank = int(eq["rankable"].iloc[0]); last_rank = int(eq["rankable"].iloc[-1])
     assumptions = [
         f"<b>Survivorship.</b> The universe is today's list of 50 ETFs. Only {first_rank} of them had enough history to be "
@@ -943,6 +980,11 @@ def main():
         "<b>Nifty:Gold trigger.</b> The 1.0 ratio move is tested on daily closes. Live, it is tested through the day.",
         f"<b>Costs.</b> {COST_PCT:.2f}% of trade value on each buy and sell (charges and slippage together) plus ₹{DP_CHARGE:.2f} per sell. "
         "Real slippage on thinly traded ETFs can be higher. No taxes are deducted.",
+        (f"<b>Regime off.</b> When the {REGIME_LABEL} is at or below its {REGIME_DMA}-DMA at a monthly check, Part B sells every ETF and puts "
+         f"all its money in {PARK_SYMBOL}, held {'with the same stops' if PARK_STOPS else 'without stops'} until a monthly check finds the regime on again. "
+         f"That was the case on {in_gold:.0f}% of days. Together with Part A's gold this makes the whole portfolio heavily dependent on gold in those periods."
+         if REGIME_OFF_ASSET == "goldbees" else
+         f"<b>Regime off.</b> When the {REGIME_LABEL} is at or below its {REGIME_DMA}-DMA at a monthly check, Part B sells every ETF and stays in cash."),
         f"<b>Cash.</b> Idle cash earns {CASH_YIELD_PA*100:.1f}% a year. Part B was fully in cash on {in_cash:.0f}% of days.",
         "<b>Sizing.</b> Whole units only, at the starting capital you entered. Each part compounds on its own; "
         "there is no rebalancing between Part A and Part B.",
@@ -966,6 +1008,7 @@ def main():
                 row[k] = round(row[k], 2)
         summary_rows.append(row)
     for lab, val in [("Period", f"{eq.index[0].date()} to {eq.index[-1].date()}"), ("Stop basis", STOP_BASIS),
+                     ("Regime off: Part B money goes to", PARK_SYMBOL if REGIME_OFF_ASSET == "goldbees" else "cash"),
                      ("Cost % each side", COST_PCT), ("DP charge per sell (Rs)", DP_CHARGE),
                      ("Momentum trades closed", len(tr)), ("Gold reshuffles", max(len(ng_log) - 1, 0)),
                      ("Total costs paid — Part A (Rs)", round(state["ng"]["costs"], 2)),
