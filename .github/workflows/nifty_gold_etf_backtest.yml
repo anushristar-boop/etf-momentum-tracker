@@ -15,6 +15,13 @@ on:
       capital:
         description: "Starting capital in rupees"
         default: "100000"
+      signal_day:
+        description: "Monthly signal: month_end = decide on the month's last close, trade at next day's close. same_day = decide and trade on the first trading day's close"
+        type: choice
+        options:
+          - month_end
+          - same_day
+        default: month_end
       regime_off:
         description: "When Nifty 50 is below its 200-DMA, Part B money goes to"
         type: choice
@@ -49,6 +56,7 @@ jobs:
           BT_START: ${{ inputs.start_date }}
           BT_END: ${{ inputs.end_date }}
           BT_CAPITAL: ${{ inputs.capital }}
+          BT_SIGNAL_DAY: ${{ inputs.signal_day }}
           BT_REGIME_OFF: ${{ inputs.regime_off }}
           BT_STOP_BASIS: ${{ inputs.stop_basis }}
           BT_COST_PCT: ${{ inputs.cost_pct }}
