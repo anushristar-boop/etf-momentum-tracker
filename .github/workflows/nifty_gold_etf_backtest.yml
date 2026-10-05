@@ -15,6 +15,13 @@ on:
       capital:
         description: "Starting capital in rupees"
         default: "100000"
+      regime_off:
+        description: "When Nifty 50 is below its 200-DMA, Part B money goes to"
+        type: choice
+        options:
+          - goldbees
+          - cash
+        default: goldbees
       stop_basis:
         description: "Check stops on the day's close, or on the day's low (stricter)"
         type: choice
@@ -42,6 +49,7 @@ jobs:
           BT_START: ${{ inputs.start_date }}
           BT_END: ${{ inputs.end_date }}
           BT_CAPITAL: ${{ inputs.capital }}
+          BT_REGIME_OFF: ${{ inputs.regime_off }}
           BT_STOP_BASIS: ${{ inputs.stop_basis }}
           BT_COST_PCT: ${{ inputs.cost_pct }}
         run: python NiftyGold_ETF_Momentum_Backtest.py
