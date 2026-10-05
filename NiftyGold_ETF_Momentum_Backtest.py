@@ -57,6 +57,10 @@ STOP_BASIS = (os.getenv("BT_STOP_BASIS", "").strip() or "close").lower()   # "cl
 COST_PCT   = float(os.getenv("BT_COST_PCT", "").strip() or 0.10)  # % of trade value, each side
                                                                  # (charges + slippage together)
 DP_CHARGE      = 15.34    # Rs per sell transaction (depository charge); 0 to ignore
+SIGNAL_DAY = (os.getenv("BT_SIGNAL_DAY", "").strip() or "month_end").lower()
+# "month_end" = ranks, 200-DMA tests and the Nifty regime use the LAST trading day's close of the month;
+#               the trades are done at the NEXT day's close (the first trading day of the new month).
+# "same_day"  = signal and trades both use the first trading day's close (the earlier behaviour).
 REGIME_OFF_ASSET = (os.getenv("BT_REGIME_OFF", "").strip() or "goldbees").lower()   # "goldbees" or "cash"
 PARK_SYMBOL    = "GOLDBEES"   # where Part B's money goes while the regime is off
 PARK_STOPS     = False    # True = the -15% / -20% stops also apply to that regime-off GOLDBEES holding
@@ -452,9 +456,11 @@ def run_backtest(data, regime, bench):
 
         # -- monthly rebalance: first trading day of a month (and the first backtest day) --
         if prev_d is None or d.month != prev_d.month:
-            rk = ranks_on(series_np, d)
+            # sd = the day whose closing prices decide; d = the day whose closing prices are traded
+            sd = cal[int(cal.searchsorted(d)) - 1] if SIGNAL_DAY == "month_end" else d
+            rk = ranks_on(series_np, sd)
             rankable_last = len(rk)
-            n = int(reg_idx.searchsorted(d, side="right"))
+            n = int(reg_idx.searchsorted(sd, side="right"))
             regime_on = bool(reg_val[n - 1] > reg_val[n - REGIME_DMA:n].mean())
             regime_on_last = regime_on
             sells, buys = [f"{s} (stop)" for s in sold_today], []
@@ -492,7 +498,8 @@ def run_backtest(data, regime, bench):
                     hold[s] = {"qty": qty, "entry": p, "date": d, "peak": p, "cost_in": c, "rank": rank}
                     buys.append(f"{s} (rank {rank})")
             top6 = sorted((r["rank"], s, r["elig"]) for s, r in rk.items() if r["rank"] <= N_HOLD)
-            monthly.append({"date": d.date().isoformat(), "regime": "ON" if regime_on else "OFF",
+            monthly.append({"date": d.date().isoformat(), "signal_date": sd.date().isoformat(),
+                            "regime": "ON" if regime_on else "OFF",
                             "etfs_rankable": len(rk),
                             "top6 (* = passes 3M>0 and 200-DMA)": ", ".join(f"{s}{'*' if e else ''}" for _, s, e in top6),
                             "sold": ", ".join(sells), "bought": ", ".join(buys),
@@ -869,6 +876,7 @@ def build_html(eq, tr, open_pos, ng_log, st, yearly, mret, checks, assumptions, 
     header = (f"<h1>Nifty:Gold Ratio + ETF Momentum — Combined Backtest</h1>"
               f"<div class='sub'>{meta['start']} to {meta['end']} · {c['years']:.1f} years · start capital ₹{CAPITAL:,.0f} "
               f"({NG_SHARE*100:.0f}% Nifty:Gold, {MOM_SHARE*100:.0f}% ETF momentum, {CASH_SHARE*100:.0f}% cash) · "
+              f"signal from <b>{'month-end close, traded at next close' if SIGNAL_DAY == 'month_end' else 'the same close it trades at'}</b> · "
               f"regime off → <b>{'all Part B money in GOLDBEES' if REGIME_OFF_ASSET == 'goldbees' else 'cash'}</b> · "
               f"stops checked on the daily <b>{STOP_BASIS}</b> · costs {COST_PCT:.2f}% each side + ₹{DP_CHARGE:.2f} per sell · "
               f"generated {meta['generated']}</div>")
@@ -898,6 +906,8 @@ def main():
     print("-" * 52)
     if STOP_BASIS not in ("close", "low"):
         raise SystemExit("BT_STOP_BASIS must be 'close' or 'low'.")
+    if SIGNAL_DAY not in ("month_end", "same_day"):
+        raise SystemExit("BT_SIGNAL_DAY must be 'month_end' or 'same_day'.")
     if REGIME_OFF_ASSET not in ("goldbees", "cash"):
         raise SystemExit("BT_REGIME_OFF must be 'goldbees' or 'cash'.")
     print("[1] Loading prices    → ", end="")
@@ -975,8 +985,12 @@ def main():
            if STOP_BASIS == "close" else
            "A stop is filled at the stop level, or at the day's open if the ETF gapped below it. The order of the day's high and low is unknown, "
            "so the trailing level uses the peak up to the previous day."),
-        "<b>Fills.</b> Monthly ranks and trades both use the first trading day's closing price. Live, ranks are computed around 2:30 pm "
-        "and orders go between 3:00 and 3:20 pm at market prices.",
+        ("<b>Signal and fills.</b> Ranks, the 200-DMA tests and the Nifty regime are read from the last trading day's close of the month; "
+         "all buying and selling is done at the next day's close (the first trading day of the new month). "
+         if SIGNAL_DAY == "month_end" else
+         "<b>Signal and fills.</b> Ranks, the 200-DMA tests, the Nifty regime and the trades all use the first trading day's closing price, "
+         "which assumes you know the close before you trade at it. ")
+        + "Live orders go at market prices in the afternoon, not exactly at the close.",
         "<b>Nifty:Gold trigger.</b> The 1.0 ratio move is tested on daily closes. Live, it is tested through the day.",
         f"<b>Costs.</b> {COST_PCT:.2f}% of trade value on each buy and sell (charges and slippage together) plus ₹{DP_CHARGE:.2f} per sell. "
         "Real slippage on thinly traded ETFs can be higher. No taxes are deducted.",
@@ -1008,6 +1022,8 @@ def main():
                 row[k] = round(row[k], 2)
         summary_rows.append(row)
     for lab, val in [("Period", f"{eq.index[0].date()} to {eq.index[-1].date()}"), ("Stop basis", STOP_BASIS),
+                     ("Monthly signal taken from", "month-end close, traded at the next day's close" if SIGNAL_DAY == "month_end"
+                      else "first trading day's close, traded at the same close"),
                      ("Regime off: Part B money goes to", PARK_SYMBOL if REGIME_OFF_ASSET == "goldbees" else "cash"),
                      ("Cost % each side", COST_PCT), ("DP charge per sell (Rs)", DP_CHARGE),
                      ("Momentum trades closed", len(tr)), ("Gold reshuffles", max(len(ng_log) - 1, 0)),
