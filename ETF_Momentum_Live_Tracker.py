@@ -13,7 +13,8 @@
 # freed slots into. Outputs one Excel workbook + one self-contained dark HTML report.
 # (This is the LIVE tracker — not the backtest and not the fresh-start screener.)
 # OPTIONAL: when run with SEND_TT_SIGNALS=1 and a TRADETRON_TOKEN (GitHub secret), it also
-# sends today's ranks + regime to the Tradetron strategy 'Nifty Gold and ETF Momentum 1L'.
+# sends the MONTH-END ranks + regime to the Tradetron strategy 'Nifty Gold and ETF Momentum 1L'
+# (ranks and regime are read from the last trading day's close of the previous month).
 # Without those two settings it behaves exactly as before and sends nothing.
 # =============================================================================
 
@@ -539,16 +540,21 @@ def build_html(hold_df, ranks, buys, meta, path):
 # Sends, for every ETF, one "rank code" to the Tradetron strategy, then the regime,
 # and LAST a month stamp (YYYYMM). Tradetron acts only when the stamp changes, i.e.
 # on the first trading day of a new month that the data arrives, at 3:00-3:20 pm.
+# SIGNAL DAY: ranks, the 3M > 0 and 200-DMA tests and the Nifty regime all use the closing
+# prices of the LAST TRADING DAY OF THE PREVIOUS MONTH. They stay the same all month, so a
+# late delivery, or a deployment started mid-month, still gets the month-end decision.
 #   rank code 1-99    = rank, and allowed to be bought (3M > 0 AND above its 200-DMA)
 #   rank code 101-199 = rank + 100, NOT allowed to be bought (still used for the rank-10 exit)
 #   rank code 0       = no data for this ETF today -> Tradetron takes no action on it
-#   regime 1 = Nifty 50 above its 200-DMA, 2 = below (sell all, stay in cash)
+#   regime 1 = Nifty 50 above its 200-DMA, 2 = at or below it (Tradetron sells every ETF
+#              and puts the momentum part's money into GOLDBEES)
 # The token is read from the TRADETRON_TOKEN secret. Never type the token in this file.
 TT_WEBHOOK_URL   = "https://api.tradetron.tech/api?"   # the trailing ? is required
 TT_PAIRS_PER_CALL = 3        # variables per call
 TT_PAUSE_SECS     = 2.5      # Tradetron limits: 3 calls/second, 30/minute, 250/hour
 TT_MIN_SCORED     = 40       # safety: do not send if fewer ETFs than this could be ranked
 TT_SESSION        = (920, 1525)   # only send while the market is open (IST, HHMM)
+TT_MAX_GAP_DAYS   = 10       # safety: the month-end close must be at most this many days before the 1st
 
 
 def _tt_post(token, pairs):
@@ -594,7 +600,27 @@ def build_tt_pairs(ranks, regime_on):
     return pairs
 
 
-def send_tradetron_signals(prices, ranks, regime_on):
+def month_end_signal(prices, regime, now):
+    """Ranks + regime as of the last trading day before the current month (IST).
+    Returns (signal_date, ranks, regime_on, problem). problem is None when all is well."""
+    if regime is None or len(regime) < REGIME_DMA:
+        return None, None, None, "could not work out the Nifty 50 regime (no index data)"
+    month_start = pd.Timestamp(now.year, now.month, 1)
+    before = regime.index[regime.index < month_start]
+    if not len(before):
+        return None, None, None, "no price history before this month"
+    sig = before[-1]
+    if (month_start - sig).days > TT_MAX_GAP_DAYS:
+        return sig, None, None, f"price history stops at {sig.date()}, too far before {month_start.date()}"
+    have = sum(1 for p in prices.values() if sig in p.index)
+    if have < 0.8 * len(prices):
+        return sig, None, None, f"only {have} of {len(prices)} ETFs have a price for {sig.date()}"
+    reg = regime.loc[:sig]
+    regime_on = bool(float(reg.iloc[-1]) > float(reg.iloc[-REGIME_DMA:].mean()))
+    return sig, compute_ranks(prices, sig), regime_on, None
+
+
+def send_tradetron_signals(prices, regime):
     """Returns True (sent), False (tried and failed) or None (skipped on purpose)."""
     if os.getenv("SEND_TT_SIGNALS") != "1":
         return None
@@ -612,15 +638,17 @@ def send_tradetron_signals(prices, ranks, regime_on):
     hhmm = now.hour * 100 + now.minute
     last_date = max(p.index[-1] for p in prices.values() if len(p)).date()
     if not force:
+        if now.weekday() > 4 or not (TT_SESSION[0] <= hhmm <= TT_SESSION[1]):
+            print(f"skipped — market is closed (time now {now:%a %H:%M} IST). "
+                  f"Signals are sent only Monday to Friday, 9:20 am to 3:25 pm")
+            return None
         if last_date != now.date():
             print(f"skipped — latest price is {last_date}, not today ({now.date()}): "
                   f"market holiday or prices not updated yet")
             return None
-        if not (TT_SESSION[0] <= hhmm <= TT_SESSION[1]):
-            print(f"skipped — market is closed (time now {now:%H:%M} IST)")
-            return None
-    if regime_on is None:
-        print("FAILED — could not work out the Nifty 50 regime (no index data)")
+    sig, ranks, regime_on, problem = month_end_signal(prices, regime, now)
+    if problem:
+        print(f"FAILED — {problem}")
         return False
     if len(ranks) < TT_MIN_SCORED:
         print(f"FAILED — only {len(ranks)} ETFs could be ranked (need {TT_MIN_SCORED}); data problem")
@@ -629,8 +657,9 @@ def send_tradetron_signals(prices, ranks, regime_on):
     pairs = build_tt_pairs(ranks, regime_on)
     stamp = now.year * 100 + now.month
     n_buyable = sum(1 for k, v in pairs if k.endswith("_r") and 1 <= v <= N_HOLD)
-    print(f"{len(pairs) - 1} rank codes, regime {'ON' if regime_on else 'OFF'}, "
-          f"stamp {stamp}, top-{N_HOLD} buyable now: {n_buyable}")
+    print(f"month-end close of {sig:%d %b %Y}: {len(pairs) - 1} rank codes, "
+          f"regime {'ON' if regime_on else 'OFF (momentum part goes to GOLDBEES)'}, "
+          f"stamp {stamp}, top-{N_HOLD} buyable: {n_buyable}")
     if dry:
         for k, v in pairs:
             print(f"      {k} = {v}")
@@ -672,7 +701,7 @@ def main():
     print(f"[3] Regime check      → {REGIME_LABEL} vs {REGIME_DMA}-DMA: "
           f"{'ON (invested)' if regime_on else ('OFF (all cash)' if regime_on is False else 'unknown')}")
 
-    tt_result = send_tradetron_signals(prices, ranks, regime_on)
+    tt_result = send_tradetron_signals(prices, regime)
 
     print("[4] Reading holdings  → ", end="")
     holdings = read_holdings()
