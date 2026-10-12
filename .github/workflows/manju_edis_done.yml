@@ -1,0 +1,33 @@
+# Press after doing e-DIS in Shoonya (between 9:20 am and 3:04 pm). Sales then go through at 3:05 / 3:10 pm today.
+name: "Manju: e-DIS done"
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: manju-state
+  cancel-in-progress: false
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install packages
+        run: pip install yfinance pandas numpy openpyxl plotly
+      - name: Confirm e-DIS
+        env:
+          TRADETRON_TOKEN_MANJU: ${{ secrets.TRADETRON_TOKEN_MANJU }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python manju_engine.py confirm
+      - name: Save the record
+        if: always()
+        run: |
+          git config user.name "manju-bot"
+          git config user.email "manju-bot@users.noreply.github.com"
+          git add manju/state.json
+          git diff --cached --quiet || (git commit -m "Manju record update" && git push)
