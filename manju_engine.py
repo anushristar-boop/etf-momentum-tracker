@@ -181,7 +181,7 @@ def decide(st, prices, regime, now):
 def edis_list(plan):
     items = [f"• {fmt_units(s)} — {why}" for s, why in plan["sells"]]
     if plan["gold_sale"]:
-        items.append("• ALL your GOLDBEES units — regime is ON again: Part B's regime-off gold is sold")
+        items.append("• Part B's GOLDBEES (the regime-off gold, incl. her old 3,418 now in Tradetron) — regime is ON again. Part A's GOLDBEES are NOT sold: e-DIS only the quantity in Tradetron's Part B GOLDBEES sell order")
     if plan["ng"]:
         items.append(f"• ALL your {plan['ng']} units — Nifty:Gold ratio now {plan['ratio']} "
                      f"(moved 1.0 from the last reshuffle): Part A reshuffles")
