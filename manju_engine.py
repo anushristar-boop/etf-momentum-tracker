@@ -360,6 +360,18 @@ def main():
         ok = mode_confirm(st, now)
     elif mode == "oldgold":
         ok = mode_oldgold(st, now)
+    elif mode == "test":
+        sample = {"sells": [("ITBEES", "stop-loss: -15.4% from buy price")], "gold_sale": False, "ng": None, "ratio": 2.18}
+        ok = telegram("TEST MESSAGE — nothing to do, this is only a sample.\n\n"
+                      f"Manju Rana Dual Engine — {now:%a %d %b %Y}, {now:%H:%M}\n\n"
+                      "SALE TODAY. Please do e-DIS in Shoonya before 3:00 pm for:\n" + "\n".join(edis_list(sample)) +
+                      "\n\nThen press 'Manju: e-DIS done' in GitHub (by 3:04 pm).\n"
+                      "Sales go through at 3:05 pm (monthly) / 3:10 pm (stop-loss, reshuffle). "
+                      "No click = nothing is sold today; I will ask again tomorrow.")
+        print("sample sent" if ok else "sample NOT sent")
+        if not ok:
+            sys.exit(1)
+        return
     elif mode == "topup":
         ok = mode_topup(st, now, float(str(sys.argv[2]).replace(",", "")) if len(sys.argv) > 2 else 0)
     else:
