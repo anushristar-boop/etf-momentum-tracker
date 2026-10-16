@@ -378,6 +378,20 @@ def main():
                       "No click = nothing is sold today; I will ask again tomorrow.")
         print("sample sent" if ok else "sample NOT sent")
         if not ok:
+            # Show which chats have written to the bot, so the right TELEGRAM_CHAT_ID can be set.
+            try:
+                tok = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+                with urllib.request.urlopen(f"https://api.telegram.org/bot{tok}/getUpdates", timeout=20) as r:
+                    ups = json.loads(r.read().decode()).get("result", [])
+                seen = {}
+                for u in ups:
+                    c = (u.get("message") or u.get("my_chat_member") or {}).get("chat") or {}
+                    if c.get("id"):
+                        seen[c["id"]] = c.get("first_name") or c.get("title") or ""
+                print("Chats that messaged the bot:", seen if seen else "none yet - open the bot in Telegram and press Start")
+                print("TELEGRAM_CHAT_ID secret has", len(os.getenv("TELEGRAM_CHAT_ID", "").strip()), "characters")
+            except Exception as e:
+                print(f"getUpdates failed: {type(e).__name__}")
             sys.exit(1)
         return
     elif mode == "topup":
