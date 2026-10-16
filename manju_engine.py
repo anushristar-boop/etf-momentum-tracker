@@ -194,8 +194,10 @@ def edis_list(plan):
     if plan["gold_sale"]:
         items.append("• Part B's GOLDBEES (the regime-off gold, incl. her old 3,418 now in Tradetron) — regime is ON again. Part A's GOLDBEES are NOT sold: e-DIS only the quantity in Tradetron's Part B GOLDBEES sell order")
     if plan["ng"]:
-        items.append(f"• ALL your {plan['ng']} units — Nifty:Gold ratio now {plan['ratio']} "
-                     f"(moved 1.0 from the last reshuffle): Part A reshuffles")
+        items.append(f"• PART of her {plan['ng']} — Nifty:Gold ratio now {plan['ratio']} "
+                     f"(moved 1.0 from the last reshuffle): Part A reshuffles and sells ONLY the extra units "
+                     f"above the new target (Tradetron's sell order shows the exact quantity; "
+                     f"e-DIS that quantity or more)")
     return items
 
 
