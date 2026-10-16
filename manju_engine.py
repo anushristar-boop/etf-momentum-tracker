@@ -66,6 +66,14 @@ def telegram(text):
             with urllib.request.urlopen(req, timeout=20) as r:
                 if r.status == 200:
                     return True
+        except urllib.error.HTTPError as e:
+            try:
+                why = json.loads(e.read().decode()).get("description", "")
+            except Exception:
+                why = ""
+            print(f"Telegram error: HTTP {e.code} {why}")
+            if e.code in (400, 401, 403, 404):
+                return False
         except Exception as e:
             print(f"Telegram error: {type(e).__name__}")
         time.sleep(5)
