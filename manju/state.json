@@ -2,7 +2,7 @@
   "adopt": true,
   "client": "Manju Rana",
   "holdings": {},
-  "last_daily": "2026-10-15",
+  "last_daily": null,
   "last_plan": {
     "buys": [],
     "date": "2026-10-15",
@@ -18,7 +18,7 @@
   },
   "month_applied": 202610,
   "multiplier": 11,
-  "ng_ref": 2.1548,
+  "ng_ref": null,
   "park": true,
   "park_tt": true,
   "pending": null,
