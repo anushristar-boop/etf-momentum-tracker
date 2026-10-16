@@ -51,13 +51,24 @@ def save_state(st):
 
 
 def telegram(text):
-    tok, chat = os.getenv("TELEGRAM_BOT_TOKEN", "").strip(), os.getenv("TELEGRAM_CHAT_ID", "").strip()
+    """Send to every chat in TELEGRAM_CHAT_ID (comma-separated: her own chat, a group, ...). True if all got it."""
+    tok, chats = os.getenv("TELEGRAM_BOT_TOKEN", "").strip(), os.getenv("TELEGRAM_CHAT_ID", "").strip()
     print("\n----- Telegram -----\n" + text + "\n--------------------")
     if DRY:
         return True
-    if not tok or not chat:
+    ids = [c.strip() for c in chats.split(",") if c.strip()]
+    if not tok or not ids:
         print("Telegram secrets missing — message not sent")
         return False
+    ok = True
+    for chat in ids:
+        sent = _telegram_one(tok, chat, text)
+        print(f"chat ending ...{chat[-4:]}: {'sent' if sent else 'NOT sent'}")
+        ok = ok and sent
+    return ok
+
+
+def _telegram_one(tok, chat, text):
     data = json.dumps({"chat_id": chat, "text": text}).encode()
     for attempt in range(3):
         try:
@@ -377,17 +388,18 @@ def main():
                       "Sales go through at 3:05 pm (monthly) / 3:10 pm (stop-loss, reshuffle). "
                       "No click = nothing is sold today; I will ask again tomorrow.")
         print("sample sent" if ok else "sample NOT sent")
-        if not ok:
-            # Show which chats have written to the bot, so the right TELEGRAM_CHAT_ID can be set.
+        if True:
+            # Show which chats (people and groups) the bot can see, so the right TELEGRAM_CHAT_ID can be set.
             try:
                 tok = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
                 with urllib.request.urlopen(f"https://api.telegram.org/bot{tok}/getUpdates", timeout=20) as r:
                     ups = json.loads(r.read().decode()).get("result", [])
                 seen = {}
                 for u in ups:
-                    c = (u.get("message") or u.get("my_chat_member") or {}).get("chat") or {}
-                    if c.get("id"):
-                        seen[c["id"]] = c.get("first_name") or c.get("title") or ""
+                    for key in ("message", "my_chat_member", "channel_post", "edited_message"):
+                        c = (u.get(key) or {}).get("chat") or {}
+                        if c.get("id"):
+                            seen[c["id"]] = (c.get("type") or "") + ": " + (c.get("title") or c.get("first_name") or "")
                 print("Chats that messaged the bot:", seen if seen else "none yet - open the bot in Telegram and press Start")
                 print("TELEGRAM_CHAT_ID secret has", len(os.getenv("TELEGRAM_CHAT_ID", "").strip()), "characters")
             except Exception as e:
