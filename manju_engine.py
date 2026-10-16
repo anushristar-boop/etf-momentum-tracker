@@ -404,6 +404,7 @@ def main():
                 print("TELEGRAM_CHAT_ID secret has", len(os.getenv("TELEGRAM_CHAT_ID", "").strip()), "characters")
             except Exception as e:
                 print(f"getUpdates failed: {type(e).__name__}")
+        if not ok:
             sys.exit(1)
         return
     elif mode == "topup":
