@@ -901,6 +901,27 @@ def build_html(eq, tr, open_pos, ng_log, st, yearly, mret, checks, assumptions, 
 # =============================================================================
 # MAIN
 # =============================================================================
+
+# =============================================================================
+# CLIENT EXPORT  (BT_JSON=path) — whole-portfolio numbers only, no rules, no holdings
+# =============================================================================
+def export_client_json(eq, s_tot, data, path):
+    import json
+    idx = eq.index
+    gold = data[NG_GOLD]["Close"].reindex(idx).ffill()
+    df = pd.DataFrame({"s": eq["total"], "n500": eq["bench"], "nifty": eq["niftybees_bh"],
+                       "gold": gold / gold.iloc[0] * CAPITAL}, index=idx)
+    day0 = s_tot.index[0]
+    df = pd.concat([pd.DataFrame({"s": [CAPITAL], "n500": [CAPITAL], "nifty": [CAPITAL], "gold": [CAPITAL]},
+                                 index=[day0]), df])
+    out = {"capital": CAPITAL, "start": idx[0].date().isoformat(), "end": idx[-1].date().isoformat(),
+           "cost_pct": COST_PCT, "dates": [d.date().isoformat() for d in df.index],
+           "series": {k: [round(float(v), 2) if pd.notna(v) else None for v in df[k]] for k in df.columns}}
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w") as f:
+        json.dump(out, f, separators=(",", ":"))
+    print(f"    Client JSON saved → {path} ({len(df)} days)")
+
 def main():
     print("Nifty:Gold Ratio + ETF Momentum — Combined Backtest")
     print("-" * 52)
@@ -1037,6 +1058,8 @@ def main():
     c = st["Combined"]
     print(f"    Combined: ₹{c['start_value']:,.0f} → ₹{c['end_value']:,.0f} | CAGR {c['cagr_pct']:.1f}% | "
           f"max drawdown {c['max_drawdown_pct']:.1f}% | Sharpe {c['sharpe']:.2f}")
+    if os.getenv("BT_JSON", "").strip():
+        export_client_json(eq, s_tot, data, os.getenv("BT_JSON").strip())
     print("[5] Excel saved       → ", end="")
     build_excel(eq, tr, open_pos, ng_log, monthly, recon, checks, summary_rows, yearly, mtable, plain, EXCEL_PATH)
     print(EXCEL_PATH.name, "✓")

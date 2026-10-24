@@ -1,0 +1,38 @@
+# Runs the backtest with Manju's settings (regime off -> GOLDBEES, month-end signal, 0.10% cost, Rs 11 lakh)
+# and saves whole-portfolio numbers only (no rules, no holdings) to client_report/manju_backtest.json
+# for the client dashboard. Press "Run workflow" to refresh.
+name: "Client report data"
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: manju-state
+  cancel-in-progress: false
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install packages
+        run: pip install yfinance pandas numpy openpyxl plotly
+      - name: Run the backtest
+        env:
+          BT_START: "2015-01-01"
+          BT_CAPITAL: "1100000"
+          BT_SIGNAL_DAY: month_end
+          BT_REGIME_OFF: goldbees
+          BT_STOP_BASIS: close
+          BT_COST_PCT: "0.10"
+          BT_JSON: client_report/manju_backtest.json
+        run: python NiftyGold_ETF_Momentum_Backtest.py
+      - name: Save the numbers
+        run: |
+          git config user.name "manju-bot"
+          git config user.email "manju-bot@users.noreply.github.com"
+          git add client_report/manju_backtest.json
+          git diff --cached --quiet || (git commit -m "Client report data" && git pull --rebase -q && git push)
