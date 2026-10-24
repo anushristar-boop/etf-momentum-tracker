@@ -56,7 +56,7 @@ CAPITAL    = float(os.getenv("BT_CAPITAL", "").strip() or 100000)
 STOP_BASIS = (os.getenv("BT_STOP_BASIS", "").strip() or "close").lower()   # "close" or "low"
 COST_PCT   = float(os.getenv("BT_COST_PCT", "").strip() or 0.10)  # % of trade value, each side
                                                                  # (charges + slippage together)
-DP_CHARGE      = 15.34    # Rs per sell transaction (depository charge); 0 to ignore
+DP_CHARGE      = float(os.getenv("BT_DP", "").strip() or 15.34)    # Rs per sell (depository charge); 0 to ignore
 SIGNAL_DAY = (os.getenv("BT_SIGNAL_DAY", "").strip() or "month_end").lower()
 # "month_end" = ranks, 200-DMA tests and the Nifty regime use the LAST trading day's close of the month;
 #               the trades are done at the NEXT day's close (the first trading day of the new month).
