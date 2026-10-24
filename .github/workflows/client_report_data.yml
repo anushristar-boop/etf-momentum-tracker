@@ -4,6 +4,10 @@
 name: "Client report data"
 on:
   workflow_dispatch:
+    inputs:
+      start_date:
+        description: "Start date (YYYY-MM-DD)"
+        default: "2019-10-01"
 permissions:
   contents: write
 concurrency:
@@ -22,7 +26,7 @@ jobs:
         run: pip install yfinance pandas numpy openpyxl plotly
       - name: Run the backtest
         env:
-          BT_START: "2015-01-01"
+          BT_START: ${{ inputs.start_date }}
           BT_CAPITAL: "100000"
           BT_SIGNAL_DAY: month_end
           BT_REGIME_OFF: goldbees
