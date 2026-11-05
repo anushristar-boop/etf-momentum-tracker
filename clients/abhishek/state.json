@@ -1,6 +1,6 @@
 {
   "active": true,
-  "adopt": true,
+  "adopt": false,
   "client": "Abhishek",
   "holdings": {},
   "last_daily": "2026-11-05",
