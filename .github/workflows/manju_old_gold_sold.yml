@@ -3,8 +3,15 @@ name: "Manju: old gold sold"
 on:
   workflow_dispatch:
     inputs:
+      client:
+        description: "Which client"
+        type: choice
+        options:
+          - manju
+          - abhishek
+        default: manju
       sure:
-        description: "Type YES after the 3,418 old GOLDBEES have been sold"
+        description: "Type YES after the client's old GOLDBEES (Manju 3,418 / Abhishek 666) have been sold"
         required: true
         type: string
 permissions:
@@ -26,7 +33,9 @@ jobs:
       - name: Old gold sold
         if: ${{ inputs.sure == 'YES' }}
         env:
+          CLIENT: ${{ inputs.client }}
           TRADETRON_TOKEN_MANJU: ${{ secrets.TRADETRON_TOKEN_MANJU }}
+          TRADETRON_TOKEN_ABHISHEK: ${{ secrets.TRADETRON_TOKEN_ABHISHEK }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python manju_engine.py oldgold
@@ -35,5 +44,5 @@ jobs:
         run: |
           git config user.name "manju-bot"
           git config user.email "manju-bot@users.noreply.github.com"
-          git add manju/state.json
+          git add manju/state.json clients
           git diff --cached --quiet || (git commit -m "Manju record update" && git push)

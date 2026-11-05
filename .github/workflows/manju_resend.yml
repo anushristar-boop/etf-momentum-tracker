@@ -4,6 +4,14 @@
 name: "Manju: resend signal"
 on:
   workflow_dispatch:
+    inputs:
+      client:
+        description: "Which client"
+        type: choice
+        options:
+          - manju
+          - abhishek
+        default: manju
 permissions:
   contents: write
 concurrency:
@@ -22,7 +30,9 @@ jobs:
         run: pip install yfinance pandas numpy openpyxl plotly
       - name: Resend signal
         env:
+          CLIENT: ${{ inputs.client }}
           TRADETRON_TOKEN_MANJU: ${{ secrets.TRADETRON_TOKEN_MANJU }}
+          TRADETRON_TOKEN_ABHISHEK: ${{ secrets.TRADETRON_TOKEN_ABHISHEK }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           MANJU_FORCE: "1"
@@ -33,5 +43,5 @@ jobs:
         run: |
           git config user.name "manju-bot"
           git config user.email "manju-bot@users.noreply.github.com"
-          git add manju/state.json
+          git add manju/state.json clients
           git diff --cached --quiet || (git commit -m "Manju record update" && git push)

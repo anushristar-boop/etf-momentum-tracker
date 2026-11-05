@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # =============================================================================
 # MANJU RANA DUAL ENGINE — daily check, Telegram alerts and buttons
-# Works with the Tradetron strategy "Manju Rana Dual Engine" (Shoonya, e-DIS before every sale).
+# Works with the Tradetron strategies "Manju Rana Dual Engine" (Shoonya, e-DIS before every sale) and
+# "Abhishek Dual Engine" (Zerodha with DDPI, no e-DIS). Pick the client with CLIENT=manju / CLIENT=abhishek.
 #
 #   python manju_engine.py daily          (scheduled ~9:35 am; "Check now" button)
 #       Works out today's sales (stop-losses, monthly rotation / regime, Nifty:Gold reshuffle),
@@ -12,8 +13,8 @@
 #   python manju_engine.py topup 200000   ("Top-up" button)      -> new money: 49% Part A, 49% Part B, 2% cash
 #
 # Secrets (GitHub > Settings > Secrets and variables > Actions):
-#   TRADETRON_TOKEN_MANJU, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
-# GitHub keeps a small record of Part B's ETFs in manju/state.json (the workflow saves it back).
+#   TRADETRON_TOKEN_MANJU, TRADETRON_TOKEN_ABHISHEK, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+# GitHub keeps a small record per client (manju/state.json, clients/abhishek/state.json); the workflows save it back.
 # Never type a token in this file.
 # =============================================================================
 import os, sys, json, time, urllib.request, urllib.error
@@ -24,7 +25,19 @@ from pathlib import Path
 import ETF_Momentum_Live_Tracker as T   # same rankings, regime and webhook code as the 1L strategy
 import pandas as pd
 
-STATE_FILE = Path(os.getenv("MANJU_STATE", Path(__file__).parent / "manju" / "state.json"))
+# One engine, several clients. CLIENT picks whose record, Tradetron key and wording are used (default: Manju).
+CLIENTS = {
+    "manju":    {"name": "Manju Rana Dual Engine", "short": "Manju", "state": "manju/state.json",
+                 "token": "TRADETRON_TOKEN_MANJU", "edis": True, "broker": "Shoonya", "old": 3418},
+    "abhishek": {"name": "Abhishek Dual Engine", "short": "Abhishek", "state": "clients/abhishek/state.json",
+                 "token": "TRADETRON_TOKEN_ABHISHEK", "edis": False, "broker": "Zerodha", "old": 666},
+}
+CLIENT = (os.getenv("CLIENT", "").strip().lower() or "manju")
+if CLIENT not in CLIENTS:
+    raise SystemExit(f"Unknown CLIENT '{CLIENT}'. Known: {', '.join(CLIENTS)}")
+C = CLIENTS[CLIENT]
+NAME, SHORT, EDIS, BROKER, OLD = C["name"], C["short"], C["edis"], C["broker"], C["old"]
+STATE_FILE = Path(os.getenv("MANJU_STATE", Path(__file__).parent / C["state"]))
 DRY = os.getenv("MANJU_DRY") == "1"
 FORCE = os.getenv("MANJU_FORCE") == "1"
 IST = ZoneInfo("Asia/Kolkata")
@@ -97,9 +110,9 @@ def tt_send(pairs):
         for k, v in pairs:
             print(f"   [dry] {k} = {v}")
         return True
-    token = os.getenv("TRADETRON_TOKEN_MANJU", "").strip()
+    token = os.getenv(C["token"], "").strip()
     if not token:
-        print("TRADETRON_TOKEN_MANJU secret is missing")
+        print(f"{C['token']} secret is missing")
         return False
     for i in range(0, len(pairs), 3):
         if not T._tt_post(token, pairs[i:i + 3]):
@@ -192,12 +205,12 @@ def decide(st, prices, regime, now):
 def edis_list(plan):
     items = [f"• {fmt_units(s)} — {why}" for s, why in plan["sells"]]
     if plan["gold_sale"]:
-        items.append("• Part B's GOLDBEES (the regime-off gold, incl. her old 3,418 now in Tradetron) — regime is ON again. Part A's GOLDBEES are NOT sold: e-DIS only the quantity in Tradetron's Part B GOLDBEES sell order")
+        items.append(("• Part B's GOLDBEES (the regime-off gold" + (", incl. her old 3,418 now in Tradetron" if CLIENT == "manju" else "") + ") — regime is ON again. Part A's GOLDBEES are NOT sold: " + ("e-DIS" if EDIS else "sell") + " only the quantity in Tradetron's Part B GOLDBEES sell order"))
     if plan["ng"]:
-        items.append(f"• PART of her {plan['ng']} — Nifty:Gold ratio now {plan['ratio']} "
+        items.append(f"• PART of the {plan['ng']} — Nifty:Gold ratio now {plan['ratio']} "
                      f"(moved 1.0 from the last reshuffle): Part A reshuffles and sells ONLY the extra units "
                      f"above the new target (Tradetron's sell order shows the exact quantity; "
-                     f"e-DIS that quantity or more)")
+                     + ("e-DIS that quantity or more)" if EDIS else "sell that quantity)"))
     return items
 
 
@@ -239,10 +252,10 @@ def mode_daily(st, now, from_button=False):
             lp = st.get("last_plan") or {}
             pend = st.get("pending")
             if pend:
-                telegram("Today's check is done. Still waiting for e-DIS on:\n" + "\n".join(edis_list(pend)) +
-                         "\nThen press 'Manju: e-DIS done' by 3:04 pm.")
+                telegram(f"{NAME}: today's check is done. Still waiting for e-DIS on:\n" + "\n".join(edis_list(pend)) +
+                         f"\nThen press '{SHORT}: e-DIS done' by 3:04 pm.")
             else:
-                telegram("Today's check is done: nothing waiting for e-DIS." +
+                telegram(f"{NAME}: today's check is done" + (": nothing waiting for e-DIS." if EDIS else ".") +
                          (" (Monthly rebalance at 3:05 pm.)" if lp.get("month_due") else ""))
         return True, st.get("last_plan")
     if not in_session(now):
@@ -255,7 +268,7 @@ def mode_daily(st, now, from_button=False):
         return None, None
     plan, pairs, problem = decide(st, prices, regime, now)
     if problem:
-        telegram(f"Manju Rana Dual Engine — daily check FAILED: {problem}. Nothing was sent to Tradetron.")
+        telegram(f"{NAME} — daily check FAILED: {problem}. Nothing was sent to Tradetron.")
         return False, None
 
     # 1) sale flags (sd=1 for today's sales, 0 for every other Part B ETF GitHub knows of), Part A flag
@@ -265,33 +278,44 @@ def mode_daily(st, now, from_button=False):
     # 2) month-end rankings + regime, then the month stamp LAST
     ok = tt_send(flags) and tt_send(pairs) and tt_send([("reb", plan["stamp"])])
     if not ok:
-        telegram("Manju Rana Dual Engine — could NOT reach Tradetron this morning. "
-                 "Please press 'Manju: check now' in GitHub, or check the strategy.")
+        telegram(f"{NAME} — could NOT reach Tradetron this morning. "
+                 "Please press 'Manju: daily check' in GitHub, or check the strategy.")
         return False, None
 
-    month_done = apply_plan(st, plan, now, confirmed=False)
+    # DDPI clients need no e-DIS: today's sales are confirmed at once (ok_day = today).
+    auto = (not EDIS) and needs_confirm(plan)
+    if auto and not tt_send([("ok_day", now.strftime("%Y%m%d"))]):
+        telegram(f"{NAME} — could NOT confirm today's sale to Tradetron. Please press 'Manju: daily check' again.")
+        return False, None
+    month_done = apply_plan(st, plan, now, confirmed=auto)
     st["last_daily"] = now.date().isoformat()
     st["last_plan"] = plan
-    st["pending"] = plan if needs_confirm(plan) else None
+    st["pending"] = plan if (EDIS and needs_confirm(plan)) else None
 
-    lines = [f"Manju Rana Dual Engine — {now:%a %d %b %Y}, {now:%H:%M}"]
-    if needs_confirm(plan):
-        lines += ["", "SALE TODAY. Please do e-DIS in Shoonya before 3:00 pm for:"] + edis_list(plan)
+    lines = [f"{NAME} — {now:%a %d %b %Y}, {now:%H:%M}"]
+    old_line = (f"sell by hand the client's OLD {OLD:,} GOLDBEES in {BROKER} today"
+                + (" (e-DIS needed)" if EDIS else "") + f", then press '{SHORT}: old gold sold' by 3:04 pm.")
+    if needs_confirm(plan) and EDIS:
+        lines += ["", f"SALE TODAY. Please do e-DIS in {BROKER} before 3:00 pm for:"] + edis_list(plan)
         if plan["old_gold_by_hand"]:
-            lines += ["", "ALSO sell by hand her OLD 3,418 GOLDBEES today (e-DIS needed), "
-                      "then press 'Manju: old gold sold' by 3:04 pm."]
-        lines += ["", "Then press 'Manju: e-DIS done' in GitHub (by 3:04 pm).",
+            lines += ["", "ALSO " + old_line]
+        lines += ["", f"Then press '{SHORT}: e-DIS done' in GitHub (by 3:04 pm).",
                   "Sales go through at 3:05 pm (monthly) / 3:10 pm (stop-loss, reshuffle). "
                   "No click = nothing is sold today; I will ask again tomorrow."]
         if plan["buys"]:
             lines += ["", "After the sales Tradetron buys: " + ", ".join(plan["buys"])]
+    elif needs_confirm(plan):
+        lines += ["", f"SALE TODAY (DDPI, no e-DIS needed). Tradetron sells at 3:05 pm (monthly) / "
+                  f"3:10 pm (stop-loss, reshuffle). Place the same orders in {BROKER}:"] + edis_list(plan)
+        if plan["old_gold_by_hand"]:
+            lines += ["", "ALSO " + old_line]
+        if plan["buys"]:
+            lines += ["", "After the sales Tradetron buys: " + ", ".join(plan["buys"])]
     elif plan["old_gold_by_hand"]:
-        lines += ["", "Regime is ON again. Please sell her OLD 3,418 GOLDBEES by hand in Shoonya today "
-                  "(e-DIS needed), then press 'Manju: old gold sold' by 3:04 pm. Tradetron then buys: "
-                  + ", ".join(plan["buys"])]
+        lines += ["", "Regime is ON again. Please " + old_line + " Tradetron then buys: " + ", ".join(plan["buys"])]
     elif plan["month_due"] or month_done:
-        lines += ["", f"Monthly rebalance today at 3:05 pm (no sale, no e-DIS needed). Regime "
-                  f"{'ON' if plan['regime_on'] else 'OFF'}."]
+        lines += ["", f"Monthly rebalance today at 3:05 pm (no sale" + (", no e-DIS needed" if EDIS else "")
+                  + f"). Regime {'ON' if plan['regime_on'] else 'OFF'}."]
         if plan["buys"]:
             lines.append("Tradetron buys: " + ", ".join(plan["buys"]))
     else:
@@ -302,6 +326,9 @@ def mode_daily(st, now, from_button=False):
 
 
 def mode_confirm(st, now):
+    if not EDIS:
+        telegram(f"{NAME}: no e-DIS is needed for this account (DDPI); sales are confirmed by the daily check itself.")
+        return True
     hhmm = now.hour * 100 + now.minute
     if now.weekday() > 4 or hhmm < SESSION[0] or hhmm > CONFIRM_LAST:
         telegram(f"'e-DIS done' was pressed at {now:%H:%M} — too late or market closed. "
@@ -332,13 +359,13 @@ def mode_oldgold(st, now):
         telegram("'Old gold sold' must be pressed while the market is open (9:20 am – 3:04 pm). Please press it again then.")
         return False
     if not st["adopt"]:
-        telegram("Her old GOLDBEES are already marked as sold. Nothing changed.")
+        telegram(f"{NAME}: the old GOLDBEES are already marked as sold. Nothing changed.")
         return True
     if not tt_send([("adopt_g", 0)]):
         telegram("'Old gold sold' could NOT reach Tradetron. Please press it again.")
         return False
     st["adopt"] = False
-    msg = "Noted: her old 3,418 GOLDBEES are sold."
+    msg = f"{NAME}: noted, the old {OLD:,} GOLDBEES are sold."
     plan = st.get("last_plan")
     if plan and plan.get("month_due") and plan.get("regime_on") and not st["park_tt"]:
         st["park"] = False
@@ -363,10 +390,10 @@ def mode_topup(st, now, amount):
         telegram("'Top-up' could NOT reach Tradetron. Please press it again.")
         return False
     st.setdefault("topups", []).append({"date": now.date().isoformat(), "amount": int(amount)})
-    telegram(f"Top-up of ₹{amount:,.0f} noted. At 3:05 pm today Tradetron puts 49% into Part A "
+    telegram(f"{NAME}: top-up of ₹{amount:,.0f} noted. At 3:05 pm today Tradetron puts 49% into Part A "
              f"(NIFTYBEES/GOLDBEES as per the ratio) and 49% into Part B "
              f"({'GOLDBEES, regime is OFF' if st['park'] else 'kept as cash until the next monthly rebalance'}); "
-             f"2% stays as cash. Make sure the money is in her Shoonya account before 3:05 pm.")
+             f"2% stays as cash. Make sure the money is in the {BROKER} account before 3:05 pm.")
     return True
 
 
@@ -374,7 +401,10 @@ def main():
     mode = sys.argv[1] if len(sys.argv) > 1 else "daily"
     st = load_state()
     now = now_ist()
-    print(f"Manju Rana Dual Engine — {mode} — {now:%Y-%m-%d %H:%M} IST")
+    if st.get("active", True) is False and mode != "test":
+        print(f"{NAME} is switched off in its record (active = false) — nothing done.")
+        return
+    print(f"{NAME} — {mode} — {now:%Y-%m-%d %H:%M} IST")
     if mode == "daily":
         ok, _ = mode_daily(st, now)
     elif mode == "confirm":

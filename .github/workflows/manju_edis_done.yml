@@ -29,5 +29,5 @@ jobs:
         run: |
           git config user.name "manju-bot"
           git config user.email "manju-bot@users.noreply.github.com"
-          git add manju/state.json
+          git add manju/state.json clients
           git diff --cached --quiet || (git commit -m "Manju record update" && git push)
