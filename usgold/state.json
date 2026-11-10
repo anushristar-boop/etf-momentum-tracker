@@ -3,8 +3,11 @@
   "capital": 22016,
   "client": "US Gold Ratio (SPY + GLD)",
   "events": [],
-  "last_daily": null,
-  "last_prices": null,
-  "last_ratio": null,
-  "ng_ref": null
+  "last_daily": "2026-11-10",
+  "last_prices": {
+    "GLD": 370.61,
+    "SPY": 748.87
+  },
+  "last_ratio": 2.0206,
+  "ng_ref": 2.0206
 }
