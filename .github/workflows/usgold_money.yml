@@ -1,0 +1,53 @@
+# US Gold Ratio: add money or take money out. Press while the US market is open
+# (9:40 am - 3:40 pm New York = about 8:10 pm - 2:10 am IST in winter, 7:10 pm - 1:10 am IST in summer).
+# Top-up: put the dollars in the broker account first. Tradetron buys SPY and GLD by the current ratio at once.
+# Withdraw: Tradetron sells SPY and GLD in the proportion held.
+name: "US Gold: top-up or withdraw"
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "Add money or take money out"
+        type: choice
+        options:
+          - topup
+          - withdraw
+        default: topup
+      amount:
+        description: "Amount in US dollars (for example 2000)"
+        required: true
+        type: string
+permissions:
+  contents: write
+concurrency:
+  group: usgold-state
+  cancel-in-progress: false
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install packages
+        run: pip install yfinance pandas
+      - name: Top-up or withdraw
+        env:
+          TRADETRON_TOKEN_USGOLD: ${{ secrets.TRADETRON_TOKEN_USGOLD }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          ACTION: ${{ inputs.action }}
+          AMOUNT: ${{ inputs.amount }}
+        run: python us_gold_engine.py "$ACTION" "$AMOUNT"
+      - name: Save the record
+        if: always()
+        run: |
+          git config user.name "usgold-bot"
+          git config user.email "usgold-bot@users.noreply.github.com"
+          git add usgold/state.json
+          if ! git diff --cached --quiet; then
+            git commit -m "US Gold record update"
+            for i in 1 2 3; do git pull --rebase -q origin main && git push && break || sleep 5; done
+          fi

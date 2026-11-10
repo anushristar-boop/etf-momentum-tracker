@@ -1,0 +1,46 @@
+# US Gold Ratio (SPY + GLD): daily check. Sends a Telegram alert and tells Tradetron only when a reshuffle is due.
+# Started each US trading day by an outside timer (cron-job.org) at 9:45 am and 10:15 am New York time.
+# The GitHub schedule below is a back-up (GitHub often starts scheduled runs late). Only the first run of the day
+# does the work. Press "Run workflow" to check now.
+name: "US Gold: daily check"
+on:
+  schedule:
+    - cron: "50 13,14,15,16 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      source:
+        description: "Leave as 'button'. The outside timer sends 'timer' (no extra 'already checked' message)."
+        default: "button"
+permissions:
+  contents: write
+concurrency:
+  group: usgold-state
+  cancel-in-progress: false
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install packages
+        run: pip install yfinance pandas
+      - name: Daily check
+        env:
+          TRADETRON_TOKEN_USGOLD: ${{ secrets.TRADETRON_TOKEN_USGOLD }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          USGOLD_MANUAL: ${{ github.event_name == 'workflow_dispatch' && inputs.source != 'timer' && '1' || '0' }}
+        run: python us_gold_engine.py daily
+      - name: Save the record
+        if: always()
+        run: |
+          git config user.name "usgold-bot"
+          git config user.email "usgold-bot@users.noreply.github.com"
+          git add usgold/state.json
+          if ! git diff --cached --quiet; then
+            git commit -m "US Gold record update"
+            for i in 1 2 3; do git pull --rebase -q origin main && git push && break || sleep 5; done
+          fi

@@ -1,0 +1,30 @@
+# US Gold Ratio: sends the current ratio, the reshuffle levels and the last check to Telegram.
+# Choice "test" sends one SAMPLE alert (marked TEST) to check the bot. Changes nothing in Tradetron.
+name: "US Gold: status or test Telegram"
+on:
+  workflow_dispatch:
+    inputs:
+      what:
+        description: "status = where the ratio stands now. test = a sample alert"
+        type: choice
+        options:
+          - status
+          - test
+        default: status
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install packages
+        run: pip install yfinance pandas
+      - name: Send message
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          WHAT: ${{ inputs.what }}
+        run: python us_gold_engine.py "$WHAT"
