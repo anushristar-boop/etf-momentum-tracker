@@ -22,5 +22,10 @@
   "park": true,
   "park_tt": true,
   "pending": null,
-  "topups": []
+  "topups": [
+    {
+      "amount": 100000,
+      "date": "2026-11-11"
+    }
+  ]
 }
