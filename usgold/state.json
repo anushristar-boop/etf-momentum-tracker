@@ -3,11 +3,11 @@
   "capital": 22016,
   "client": "US Gold Ratio (SPY + GLD)",
   "events": [],
-  "last_daily": "2026-11-16",
+  "last_daily": "2026-11-17",
   "last_prices": {
-    "GLD": 355.46,
-    "SPY": 749.11
+    "GLD": 354.41,
+    "SPY": 738.77
   },
-  "last_ratio": 2.1074,
+  "last_ratio": 2.0845,
   "ng_ref": 2.0206
 }
